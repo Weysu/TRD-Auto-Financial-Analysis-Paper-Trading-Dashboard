@@ -12,3 +12,7 @@ RUN pip install --no-cache-dir -r trd_auto/requirements.txt
 
 # Copy the full project.
 COPY . .
+
+# Run as a non-root user to limit the blast radius of a container escape.
+RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+USER appuser

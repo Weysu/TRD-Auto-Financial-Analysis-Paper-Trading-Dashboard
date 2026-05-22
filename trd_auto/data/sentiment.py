@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -12,11 +13,18 @@ import streamlit as st
 from dotenv import load_dotenv
 from newsapi import NewsApiClient
 
+_log = logging.getLogger(__name__)
+
 # Load .env from the project root (no-op if already set via environment).
 load_dotenv()
 
 _NEWS_API_KEY: str = os.environ.get("NEWS_API_KEY", "")
 _GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
+
+if not _NEWS_API_KEY:
+    _log.warning("NEWS_API_KEY is not set — sentiment scoring will be disabled.")
+if not _GEMINI_API_KEY:
+    _log.warning("GEMINI_API_KEY is not set — sentiment scoring will be disabled.")
 _ARTICLE_COUNT: int = 5
 _GEMINI_MODEL: str = "gemini-2.5-flash"
 
@@ -65,10 +73,10 @@ def _call_gemini(title: str) -> tuple[int, str]:
         return score, str(payload.get("summary", ""))
 
     except Exception as exc:
-        print(
-            f"[sentiment] Gemini parse error for title={title!r}\n"
-            f"  error   : {exc}\n"
-            f"  raw resp: {raw_text!r}"
+        # Log via the standard logging framework so output is controlled by
+        # the log level and never printed unconditionally to stdout / container logs.
+        _log.warning(
+            "[sentiment] Gemini parse error for title=%r — %s", title, exc
         )
         return 0, ""
 

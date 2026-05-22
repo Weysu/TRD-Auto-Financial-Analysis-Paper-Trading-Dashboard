@@ -4,8 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Secrets / environment
-.env
+# Secrets / environment — match .env at any depth (e.g. trd_auto/.env)
+**/.env
 
 # Virtual environments
 venv/
