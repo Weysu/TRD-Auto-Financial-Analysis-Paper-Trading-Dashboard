@@ -15,4 +15,10 @@ COPY . .
 
 # Run as a non-root user to limit the blast radius of a container escape.
 RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+
+# Give appuser ownership of all files (including paper_trader/) and ensure
+# all directories are readable and executable by the owning user.
+RUN chown -R appuser:appgroup /app \
+ && chmod -R 755 /app
+
 USER appuser
