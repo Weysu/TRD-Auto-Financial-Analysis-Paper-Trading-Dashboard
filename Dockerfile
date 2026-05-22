@@ -14,14 +14,12 @@ RUN pip install --no-cache-dir -r trd_auto/requirements.txt
 COPY . .
 
 # Run as a non-root user to limit the blast radius of a container escape.
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup --home /home/appuser --create-home appuser
-
-# Give appuser ownership of all files (including paper_trader/) and ensure
-# all directories are readable and executable by the owning user.
-RUN chown -R appuser:appgroup /app \
- && chmod -R 755 /app
-
-USER appuser
+RUN addgroup --system appgroup \
+    && adduser --system --ingroup appgroup --home /home/appuser appuser \
+    && mkdir -p /home/appuser/.cache/py-yfinance \
+    && chown -R appuser:appgroup /app /home/appuser
 
 ENV HOME=/home/appuser
-ENV YF_CACHE_DIR=/tmp/yfinance-cache
+ENV XDG_CACHE_HOME=/home/appuser/.cache
+
+USER appuser
