@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Secrets / environment
+.env
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Version control
+.git/
+.gitignore
+
+# SQLite database (bind-mounted at runtime)
+paper_trader.db

@@ -1,0 +1,37 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # Streamlit dashboard — TRD Auto + Paper Trading monitor
+  # ---------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      streamlit run trd_auto/app.py
+      --server.port 8501
+      --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Shared SQLite database — must exist on the host before first run.
+      # Create it with: touch paper_trader.db
+      - ./paper_trader.db:/app/paper_trader.db
+
+  # ---------------------------------------------------------------------------
+  # Paper trading engine — runs check_and_execute every 4 hours
+  # ---------------------------------------------------------------------------
+  paper_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m paper_trader.engine
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Same bind-mount so both containers read and write the same SQLite file.
+      - ./paper_trader.db:/app/paper_trader.db

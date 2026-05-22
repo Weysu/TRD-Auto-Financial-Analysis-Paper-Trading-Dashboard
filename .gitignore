@@ -1,0 +1,24 @@
+# Secrets / environment
+.env
+.streamlit/secrets.toml
+
+# Databases
+*.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Build / distribution
+*.egg-info/
+dist/
+build/
+
+# OS artefacts
+.DS_Store
+Thumbs.db
