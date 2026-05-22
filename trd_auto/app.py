@@ -48,7 +48,31 @@ from data.indicators import compute_indicators
 from data.sentiment import get_sentiment
 from ui.layout import render_main
 from ui.sidebar import render_sidebar
-from paper_trader.monitor import paper_trading_page
+
+# paper_trader.monitor is imported lazily inside _paper_trading_page() so that
+# Streamlit's hot-reload picks up changes without a full server restart.
+# importlib.reload() is called only when the module's source file has changed
+# (mtime-based check), making repeated renders cheap.
+_monitor_mtime: float = 0.0
+
+
+def _paper_trading_page() -> None:
+    """Thin shim: lazily import + conditionally reload paper_trader.monitor."""
+    import importlib
+    import paper_trader.monitor as _mod
+
+    global _monitor_mtime
+    try:
+        import inspect
+        src = inspect.getfile(_mod)
+        current_mtime = os.path.getmtime(src)
+        if current_mtime != _monitor_mtime:
+            _mod = importlib.reload(_mod)
+            _monitor_mtime = current_mtime
+    except Exception:
+        pass  # if mtime check fails, use whatever is cached
+
+    _mod.paper_trading_page()
 
 # ---------------------------------------------------------------------------
 # Connector registry
@@ -215,7 +239,7 @@ pg = st.navigation(
     [
         st.Page(dashboard, title="Dashboard", icon="📈"),
         st.Page("backtest.py", title="Backtest",  icon="🔬"),
-        st.Page(paper_trading_page, title="Paper Trading", icon="💼"),
+        st.Page(_paper_trading_page, title="Paper Trading", icon="💼"),
     ]
 )
 pg.run()

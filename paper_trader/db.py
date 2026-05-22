@@ -94,28 +94,88 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """
+    Return the set of column names for ``table`` using ``PRAGMA table_info``.
+
+    Returns an empty set if the table does not exist.
+    """
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] for row in rows}
+
+
+def _portfolio_has_bot_id_pk(conn: sqlite3.Connection) -> bool:
+    """
+    Return ``True`` when the portfolio table already uses ``bot_id`` as its
+    PRIMARY KEY (the new schema).  Detects the old auto-increment schema by
+    inspecting ``PRAGMA table_info`` — if ``bot_id`` is absent OR its ``pk``
+    rank is 0 (not a PK column), the table is considered legacy.
+    """
+    rows = conn.execute("PRAGMA table_info(portfolio)").fetchall()
+    if not rows:          # table does not exist yet
+        return True       # nothing to migrate; DDL will create it correctly
+    for row in rows:
+        if row["name"] == "bot_id" and row["pk"] > 0:
+            return True
+    return False
+
+
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """
-    Add columns introduced in the multi-bot refactor to existing tables.
+    Bring an existing database up to the current multi-bot schema.
 
-    Each ALTER TABLE is wrapped in its own try/except so that a column that
-    already exists (``OperationalError: duplicate column name``) is silently
-    skipped without aborting the migration.
+    Strategy
+    --------
+    1. **portfolio**: if the table exists but uses the old auto-increment PK
+       (no ``bot_id`` PK column), drop it and let ``_DDL`` recreate it on
+       the next ``executescript`` call.  Any old single-bot data is discarded
+       because it cannot be mapped to a ``bot_id`` reliably.
+
+    2. **positions / trades**: use ``PRAGMA table_info`` to check whether each
+       required column is present before issuing ``ALTER TABLE``; this avoids
+       the ``OperationalError: duplicate column name`` that made the original
+       try/except approach fragile.
     """
-    migrations: list[tuple[str, str, str]] = [
+    # ------------------------------------------------------------------
+    # 1. Portfolio schema check — drop legacy table if necessary
+    # ------------------------------------------------------------------
+    if not _portfolio_has_bot_id_pk(conn):
+        logger.warning(
+            "Legacy portfolio schema detected (no bot_id PK). "
+            "Dropping and recreating portfolio table."
+        )
+        conn.execute("DROP TABLE IF EXISTS portfolio")
+        conn.execute(
+            """
+            CREATE TABLE portfolio (
+                bot_id          TEXT PRIMARY KEY,
+                created_at      TEXT NOT NULL,
+                initial_capital REAL NOT NULL,
+                current_capital REAL NOT NULL
+            )
+            """
+        )
+
+    # ------------------------------------------------------------------
+    # 2. positions — add missing columns
+    # ------------------------------------------------------------------
+    pos_cols = _table_columns(conn, "positions")
+    _add_if_missing: list[tuple[str, str, str]] = [
         ("positions", "bot_id", "TEXT NOT NULL DEFAULT ''"),
         ("trades",    "bot_id", "TEXT NOT NULL DEFAULT ''"),
         ("trades",    "reason", "TEXT NOT NULL DEFAULT 'signal'"),
-        # portfolio.bot_id is the PRIMARY KEY in new databases; for legacy
-        # databases that used an auto-increment id we add it as a plain column.
-        ("portfolio", "bot_id", "TEXT NOT NULL DEFAULT ''"),
     ]
-    for table, column, definition in migrations:
-        try:
+    trade_cols = _table_columns(conn, "trades")
+    col_cache: dict[str, set[str]] = {"positions": pos_cols, "trades": trade_cols}
+
+    for table, column, definition in _add_if_missing:
+        existing = col_cache.get(table, set())
+        if not existing:
+            # Table does not exist yet; DDL will create it with the correct schema.
+            continue
+        if column not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             logger.info("Schema migration: added %s.%s", table, column)
-        except sqlite3.OperationalError:
-            pass  # column already exists — nothing to do
 
 
 # ---------------------------------------------------------------------------
@@ -136,8 +196,11 @@ def init_db(bots: "dict[str, BotConfig]") -> None:
     """
     try:
         with _connect() as conn:
-            conn.executescript(_DDL)
+            # Migration must run *before* CREATE TABLE IF NOT EXISTS so that
+            # a legacy portfolio table is dropped first (otherwise the DDL
+            # no-ops and the bad schema persists).
             _migrate_schema(conn)
+            conn.executescript(_DDL)
 
             now = datetime.now(tz=timezone.utc).isoformat()
             for bot_id, cfg in bots.items():
