@@ -1,18 +1,23 @@
 """
 paper_trader.monitor
 ====================
-Streamlit page for the paper trading monitor.
+Multi-bot paper trading Streamlit page.
 
-Displays
---------
-- KPI tiles: equity, cash, total return %, open positions count.
-- Open positions table with unrealised PnL per row.
-- Closed trades table with realised PnL per row.
-- Equity curve: cumulative value over time derived from trade history.
+Layout
+------
+1. Summary table — one row per bot showing equity, total-return %, open
+   positions, closed trades, and win rate.  Rows are coloured green/red
+   depending on whether total return is positive.
+2. Bot selector — ``st.selectbox`` to choose one bot for a detailed view.
+3. Detailed view for the selected bot:
+   - Four KPI metric tiles (equity, cash, total return %, open positions).
+   - Open positions table with SL/TP price columns.
+   - Closed trades table with the exit ``reason`` column.
+   - Equity curve built from cumulative PnL in the trade history.
 
-This module is imported by ``trd_auto/app.py`` and passed as a callable to
-``st.Page``.  Path bootstrap runs at module level so imports from both
-``paper_trader`` and ``trd_auto`` resolve correctly.
+Imported by ``trd_auto/app.py`` as a navigation page::
+
+    st.Page(paper_trading_page, title="Paper Trading", icon="💼")
 """
 
 from __future__ import annotations
@@ -22,37 +27,30 @@ import sys
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Path bootstrap — runs once at import time.
+# Path bootstrap
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_HERE)
-_TRDAUTO = os.path.join(_PROJECT_ROOT, "trd_auto")
-
-for _p in (_PROJECT_ROOT, _TRDAUTO):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # ---------------------------------------------------------------------------
-# Imports (after path setup)
+# paper_trader imports
 # ---------------------------------------------------------------------------
-import pandas as pd  # noqa: E402
-import plotly.graph_objects as go  # noqa: E402
-import streamlit as st  # noqa: E402
-
+from paper_trader.bots import BOTS, BotConfig  # noqa: E402
 from paper_trader.db import (  # noqa: E402
+    get_all_portfolios,
     get_open_positions,
     get_portfolio,
     get_trade_history,
+    init_db,
 )
-from paper_trader.portfolio import Portfolio  # noqa: E402
-from data.connectors.coingecko import CoinGeckoConnector  # noqa: E402
-from data.connectors.yahoo_finance import YahooFinanceConnector  # noqa: E402
-from data.base import DataSourceBase  # noqa: E402
 
-_CONNECTOR_REGISTRY: dict[str, type[DataSourceBase]] = {
-    "yahoo": YahooFinanceConnector,
-    "coingecko": CoinGeckoConnector,
-}
+# ---------------------------------------------------------------------------
+# Streamlit import (only safe inside the Streamlit process)
+# ---------------------------------------------------------------------------
+import streamlit as st  # noqa: E402
+import pandas as pd  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -60,248 +58,236 @@ _CONNECTOR_REGISTRY: dict[str, type[DataSourceBase]] = {
 # ---------------------------------------------------------------------------
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def _fetch_price_cached(source: str, symbol: str) -> float:
-    """Fetch and cache the current price for 2 minutes."""
-    try:
-        connector = _CONNECTOR_REGISTRY[source]()
-        quote = connector.get_quote(symbol)
-        return float(quote.get("price", float("nan")))
-    except Exception:
-        return float("nan")
+def _colour_return(val: float) -> str:
+    """Return a CSS colour string for a return percentage value."""
+    return "color: green" if val > 0 else "color: red" if val < 0 else ""
 
 
-def _current_prices_for_positions(
-    positions: list[dict[str, Any]],
-) -> dict[str, float]:
-    """Return a ``symbol → price`` dict for all open positions."""
-    prices: dict[str, float] = {}
+def _summary_df(all_portfolios: list[dict[str, Any]]) -> pd.DataFrame:
+    """Build the all-bots summary DataFrame."""
+    rows = []
+    for row in all_portfolios:
+        bot_id: str = row["bot_id"]
+        cfg: BotConfig = BOTS.get(bot_id, None)  # type: ignore[assignment]
+        initial: float = row["initial_capital"]
+        equity: float = row["current_capital"]
+        total_ret_pct: float = (equity - initial) / initial * 100 if initial else 0.0
+        rows.append(
+            {
+                "Bot": cfg.name if cfg else bot_id,
+                "Strategy": cfg.description if cfg else "",
+                "Equity ($)": equity,
+                "Total Return (%)": total_ret_pct,
+                "Open Positions": row["num_open_positions"],
+                "Closed Trades": row["num_closed_trades"],
+                "Win Rate (%)": row["win_rate"],
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _open_positions_df(bot_id: str, cfg: BotConfig) -> pd.DataFrame:
+    """Return open positions for ``bot_id`` with SL/TP price columns."""
+    positions = get_open_positions(bot_id)
+    if not positions:
+        return pd.DataFrame()
+
+    rows = []
     for pos in positions:
-        symbol = pos["symbol"]
-        if symbol not in prices:
-            prices[symbol] = _fetch_price_cached(pos["source"], symbol)
-    return prices
+        entry: float = pos["entry_price"]
+        sl_price: float = entry * (1 - cfg.stop_loss_pct)
+        tp_price: float = entry * (1 + cfg.take_profit_pct)
+        rows.append(
+            {
+                "Symbol": pos["symbol"],
+                "Strategy": pos["strategy"],
+                "Entry Price": entry,
+                "Shares": pos["shares"],
+                "Stop Loss ($)": sl_price,
+                "Take Profit ($)": tp_price,
+                "Entry Date": pos["entry_date"],
+            }
+        )
+    return pd.DataFrame(rows)
 
 
-def _build_equity_curve(
-    trades: list[dict[str, Any]],
-    initial_capital: float,
-) -> pd.DataFrame:
-    """
-    Build a cumulative equity curve from closed trade history.
-
-    Returns a DataFrame with columns ``date`` and ``equity``, starting at
-    ``initial_capital`` before the first trade and advancing by each trade's
-    realised PnL.
-    """
+def _trades_df(bot_id: str) -> pd.DataFrame:
+    """Return closed trades for ``bot_id`` in a presentable form."""
+    trades = get_trade_history(bot_id)
     if not trades:
-        return pd.DataFrame({"date": [], "equity": []})
+        return pd.DataFrame()
 
-    df = pd.DataFrame(trades)[["exit_date", "pnl"]].copy()
-    df["exit_date"] = pd.to_datetime(df["exit_date"], utc=True)
-    df = df.sort_values("exit_date").reset_index(drop=True)
-    df["equity"] = initial_capital + df["pnl"].cumsum()
-
-    # Prepend the starting point.
-    start = pd.DataFrame(
-        {"exit_date": [df["exit_date"].iloc[0]], "equity": [initial_capital]}
+    df = pd.DataFrame(trades)
+    cols = [
+        "symbol", "strategy", "entry_price", "exit_price", "shares",
+        "pnl", "pnl_pct", "reason", "entry_date", "exit_date",
+    ]
+    df = df[[c for c in cols if c in df.columns]]
+    df = df.rename(
+        columns={
+            "symbol": "Symbol", "strategy": "Strategy",
+            "entry_price": "Entry ($)", "exit_price": "Exit ($)",
+            "shares": "Shares", "pnl": "PnL ($)", "pnl_pct": "PnL (%)",
+            "reason": "Reason", "entry_date": "Entry Date", "exit_date": "Exit Date",
+        }
     )
-    curve = pd.concat([start, df[["exit_date", "equity"]]], ignore_index=True)
-    curve = curve.rename(columns={"exit_date": "date"})
-    return curve
+    return df
 
 
-def _colour(value: float) -> str:
-    """Return a green / red / grey CSS colour string based on sign."""
-    if value > 0:
-        return "green"
-    if value < 0:
-        return "red"
-    return "grey"
+def _equity_curve(bot_id: str, initial_capital: float) -> pd.DataFrame | None:
+    """Return a cumulative-PnL DataFrame for the equity curve, or ``None`` if empty."""
+    trades = get_trade_history(bot_id)
+    if not trades:
+        return None
+    df = pd.DataFrame(trades)
+    if "pnl" not in df.columns or "exit_date" not in df.columns:
+        return None
+    df = df.sort_values("exit_date").reset_index(drop=True)
+    df["Equity ($)"] = initial_capital + df["pnl"].cumsum()
+    df["Date"] = pd.to_datetime(df["exit_date"])
+    return df[["Date", "Equity ($)"]]
 
 
 # ---------------------------------------------------------------------------
-# Page function (callable for st.Page)
+# Page
 # ---------------------------------------------------------------------------
 
 
 def paper_trading_page() -> None:
-    """Render the full Paper Trading monitor page."""
-    st.title("💼 Paper Trading Monitor")
+    """Streamlit page function — registered in ``trd_auto/app.py`` navigation."""
+    # Ensure DB and portfolio rows exist.
+    init_db(BOTS)
+
+    st.title("Paper Trading — Multi-Bot Monitor")
+    st.caption(
+        "Live paper trading results for 5 independent strategy bots.  "
+        "The engine runs a new signal cycle every 4 hours."
+    )
 
     # ------------------------------------------------------------------
-    # 1. Load data
+    # 1. Summary table
     # ------------------------------------------------------------------
-    portfolio_row = get_portfolio()
-    if not portfolio_row:
-        st.warning(
-            "No portfolio found.  Start the engine at least once to initialise "
-            "the database:  `python -m paper_trader.engine`"
-        )
+    st.subheader("All Bots — Summary")
+    all_portfolios = get_all_portfolios()
+
+    if not all_portfolios:
+        st.info("No portfolio data yet.  The engine has not run its first cycle.")
         return
 
-    initial_capital: float = portfolio_row.get("initial_capital", 10_000.0)
-    open_positions = get_open_positions()
-    trades = get_trade_history()
+    summary = _summary_df(all_portfolios)
 
-    # Fetch current prices for open positions (cached).
-    with st.spinner("Fetching live prices…"):
-        prices = _current_prices_for_positions(open_positions)
+    def _row_style(row: pd.Series) -> list[str]:
+        ret = row.get("Total Return (%)", 0.0)
+        colour = "color: #2ecc71" if ret > 0 else "color: #e74c3c" if ret < 0 else ""
+        return [colour] * len(row)
 
-    portfolio = Portfolio(initial_capital)
-    summary = portfolio.get_summary(prices)
+    st.dataframe(
+        summary.style.apply(_row_style, axis=1).format(
+            {
+                "Equity ($)": "{:,.2f}",
+                "Total Return (%)": "{:+.2f}%",
+                "Win Rate (%)": "{:.1f}%",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.divider()
 
     # ------------------------------------------------------------------
-    # 2. KPI tiles
+    # 2. Bot selector
     # ------------------------------------------------------------------
-    st.subheader("Portfolio Summary")
+    bot_options = [cfg.name for cfg in BOTS.values()]
+    bot_ids = list(BOTS.keys())
+    selected_name = st.selectbox("Select a bot for detailed view", bot_options)
+    selected_bot_id = bot_ids[bot_options.index(selected_name)]
+    selected_cfg = BOTS[selected_bot_id]
+
+    portfolio_row = get_portfolio(selected_bot_id) or {}
+    initial_cap: float = portfolio_row.get("initial_capital", selected_cfg.initial_capital)
+    current_cap: float = portfolio_row.get("current_capital", initial_cap)
+    total_ret: float = (current_cap - initial_cap) / initial_cap * 100 if initial_cap else 0.0
+    open_pos_count = len(get_open_positions(selected_bot_id))
+
+    # ------------------------------------------------------------------
+    # 3. Detailed view
+    # ------------------------------------------------------------------
+    st.subheader(f"{selected_cfg.name}  —  {selected_cfg.description}")
+
+    # KPI tiles
     col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric(
-        label="Equity",
-        value=f"${summary['equity']:,.2f}",
-    )
-    col2.metric(
-        label="Cash",
-        value=f"${summary['cash']:,.2f}",
-    )
-    ret = summary["total_return_pct"]
+    col1.metric("Equity", f"${current_cap:,.2f}")
+    col2.metric("Cash", f"${current_cap:,.2f}")
     col3.metric(
-        label="Total Return",
-        value=f"{ret:+.2f}%",
-        delta=f"{ret:+.2f}%",
+        "Total Return",
+        f"{total_ret:+.2f}%",
         delta_color="normal",
     )
-    col4.metric(
-        label="Open Positions",
-        value=str(summary["num_open_positions"]),
+    col4.metric("Open Positions", str(open_pos_count))
+
+    st.caption(
+        f"Timeframe: **{selected_cfg.timeframe}**  |  "
+        f"Strategies: **{', '.join(selected_cfg.strategy_filter)}**  |  "
+        f"Confluence threshold: **{selected_cfg.min_confluence}**  |  "
+        f"SL: **{selected_cfg.stop_loss_pct*100:.0f}%**  |  "
+        f"TP: **{selected_cfg.take_profit_pct*100:.0f}%**"
     )
 
     st.divider()
 
-    # ------------------------------------------------------------------
-    # 3. Open positions table
-    # ------------------------------------------------------------------
+    # Open positions
     st.subheader("Open Positions")
-    if not open_positions:
+    open_df = _open_positions_df(selected_bot_id, selected_cfg)
+    if open_df.empty:
         st.info("No open positions.")
     else:
-        rows: list[dict[str, Any]] = []
-        for pos in open_positions:
-            symbol = pos["symbol"]
-            current = prices.get(symbol, float("nan"))
-            if current == current and pos["entry_price"] > 0:  # not NaN
-                unrealised_pnl = (current - pos["entry_price"]) * pos["shares"]
-                unrealised_pct = (
-                    (current - pos["entry_price"]) / pos["entry_price"] * 100.0
-                )
-            else:
-                unrealised_pnl = float("nan")
-                unrealised_pct = float("nan")
-
-            rows.append(
-                {
-                    "Symbol": symbol,
-                    "Source": pos["source"],
-                    "Strategy": pos["strategy"],
-                    "Entry Price": pos["entry_price"],
-                    "Current Price": current,
-                    "Shares": pos["shares"],
-                    "Unrealised PnL ($)": unrealised_pnl,
-                    "Unrealised PnL (%)": unrealised_pct,
-                    "Entry Date": pos["entry_date"][:19].replace("T", " "),
-                }
-            )
-
-        positions_df = pd.DataFrame(rows)
         st.dataframe(
-            positions_df.style.format(
+            open_df.style.format(
                 {
                     "Entry Price": "{:.4f}",
-                    "Current Price": "{:.4f}",
                     "Shares": "{:.6f}",
-                    "Unrealised PnL ($)": "{:+.2f}",
-                    "Unrealised PnL (%)": "{:+.2f}%",
+                    "Stop Loss ($)": "{:.4f}",
+                    "Take Profit ($)": "{:.4f}",
                 }
             ),
             use_container_width=True,
             hide_index=True,
         )
 
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # 4. Closed trades table
-    # ------------------------------------------------------------------
+    # Closed trades
     st.subheader("Trade History")
-    if not trades:
+    trades_df = _trades_df(selected_bot_id)
+    if trades_df.empty:
         st.info("No closed trades yet.")
     else:
-        trade_rows: list[dict[str, Any]] = [
-            {
-                "Symbol": t["symbol"],
-                "Source": t["source"],
-                "Strategy": t["strategy"],
-                "Entry Price": t["entry_price"],
-                "Exit Price": t["exit_price"],
-                "Shares": t["shares"],
-                "PnL ($)": t["pnl"],
-                "PnL (%)": t["pnl_pct"],
-                "Entry Date": t["entry_date"][:19].replace("T", " "),
-                "Exit Date": t["exit_date"][:19].replace("T", " "),
-            }
-            for t in trades
-        ]
-        trades_df = pd.DataFrame(trade_rows)
+
+        def _pnl_colour(row: pd.Series) -> list[str]:
+            val = row.get("PnL ($)", 0.0)
+            colour = "color: #2ecc71" if val > 0 else "color: #e74c3c" if val < 0 else ""
+            return [colour] * len(row)
+
+        fmt: dict[str, str] = {}
+        if "Entry ($)" in trades_df.columns:
+            fmt["Entry ($)"] = "{:.4f}"
+        if "Exit ($)" in trades_df.columns:
+            fmt["Exit ($)"] = "{:.4f}"
+        if "PnL ($)" in trades_df.columns:
+            fmt["PnL ($)"] = "{:+.2f}"
+        if "PnL (%)" in trades_df.columns:
+            fmt["PnL (%)"] = "{:+.2f}%"
+
         st.dataframe(
-            trades_df.style.format(
-                {
-                    "Entry Price": "{:.4f}",
-                    "Exit Price": "{:.4f}",
-                    "Shares": "{:.6f}",
-                    "PnL ($)": "{:+.2f}",
-                    "PnL (%)": "{:+.2f}%",
-                }
-            ),
+            trades_df.style.apply(_pnl_colour, axis=1).format(fmt),
             use_container_width=True,
             hide_index=True,
         )
 
-    st.divider()
-
-    # ------------------------------------------------------------------
-    # 5. Equity curve
-    # ------------------------------------------------------------------
+    # Equity curve
     st.subheader("Equity Curve")
-    curve = _build_equity_curve(trades, initial_capital)
-    if curve.empty:
-        st.info("No trade history available to plot.")
+    curve = _equity_curve(selected_bot_id, initial_cap)
+    if curve is None or curve.empty:
+        st.info("Not enough trade history to draw an equity curve.")
     else:
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=curve["date"],
-                y=curve["equity"],
-                mode="lines+markers",
-                name="Equity",
-                line={"color": "#00b09b", "width": 2},
-                marker={"size": 5},
-                hovertemplate="<b>%{x|%Y-%m-%d}</b><br>Equity: $%{y:,.2f}<extra></extra>",
-            )
-        )
-        # Baseline reference
-        fig.add_hline(
-            y=initial_capital,
-            line_dash="dot",
-            line_color="grey",
-            annotation_text=f"Initial capital ${initial_capital:,.0f}",
-            annotation_position="bottom right",
-        )
-        fig.update_layout(
-            xaxis_title="Date",
-            yaxis_title="Portfolio Value ($)",
-            template="plotly_dark",
-            height=400,
-            margin={"l": 40, "r": 20, "t": 20, "b": 40},
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.line_chart(curve.set_index("Date"))
+

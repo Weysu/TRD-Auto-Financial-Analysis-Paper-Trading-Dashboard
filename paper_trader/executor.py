@@ -1,34 +1,31 @@
 """
 paper_trader.executor
 =====================
-Signal executor.  The single public function ``check_and_execute`` scans
-every asset defined in ``trd_auto/config/assets.ALL_ASSETS``, evaluates a
-confluence score, and triggers buy / sell actions on the supplied
-``Portfolio`` instance.
+Per-bot signal executor.  ``check_and_execute`` is the single public entry
+point: given a ``Portfolio`` and its ``BotConfig``, it:
 
-Buy rule  : confluence score >= 3, no open position on the asset
-            → allocate up to 20 % of current cash.
-Sell rule : confluence score <= 1, open position exists on the asset
-            → sell the entire position at the current market price.
+1. Fetches current prices for all open positions.
+2. Runs stop-loss / take-profit checks and exits any triggered positions first.
+3. Scans all assets defined in ``trd_auto/config/assets.ALL_ASSETS``.
+4. For each asset, computes a confluence score using only the strategies
+   listed in ``bot_config.strategy_filter``.
+5. Applies the bot's ``min_confluence`` buy threshold and a symmetric
+   sell threshold of ``max(0, min_confluence - 2)``.
+6. Returns a list of all executed actions with a ``reason`` field.
 
-Sentiment is set to neutral (``overall_score = 0``) because the executor
-runs outside the Streamlit session context and cannot call the live
-sentiment API without blocking the schedule loop.
-
-The confluence calculation is a local reimplementation that avoids the
-``st.warning`` call inside ``data.signal_engine`` so the engine stays
-Streamlit-free.
+No Streamlit dependency — safe to run in a plain Python process.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Path bootstrap — must happen before any trd_auto or paper_trader imports.
+# Path bootstrap
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_HERE)
@@ -57,6 +54,7 @@ from data.strategies import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # paper_trader imports
 # ---------------------------------------------------------------------------
+from paper_trader.bots import BotConfig  # noqa: E402
 from paper_trader.portfolio import Portfolio  # noqa: E402
 from paper_trader import db as _db  # noqa: E402
 
@@ -71,19 +69,16 @@ _CONNECTOR_REGISTRY: dict[str, type[DataSourceBase]] = {
     "coingecko": CoinGeckoConnector,
 }
 
-# Period used when fetching OHLCV for signal computation.
-# 3M (90 daily bars) is sufficient for MA-50, MACD(26), and Bollinger(20).
-_SIGNAL_PERIOD: str = "3M"
+# Maps strategy_filter keys to their implementation functions.
+_STRATEGY_MAP: dict[str, Any] = {
+    "ma":   run_ma_crossover,
+    "rsi":  run_rsi_strategy,
+    "bb":   run_bollinger_bands,
+    "macd": run_macd_crossover,
+}
 
-# Maximum share of current cash allocated to a single buy order.
-_MAX_ALLOCATION: float = 0.20
-
-_STRATEGIES: list[tuple[str, Any]] = [
-    ("MA Crossover", run_ma_crossover),
-    ("RSI", run_rsi_strategy),
-    ("Bollinger Bands", run_bollinger_bands),
-    ("MACD Crossover", run_macd_crossover),
-]
+# Minimum bars required to run the slowest indicator (MA-50).
+_MIN_BARS: int = 60
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +86,11 @@ _STRATEGIES: list[tuple[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 
-def _fetch_ohlcv(source: str, symbol: str) -> pd.DataFrame:
-    """Fetch OHLCV history using the appropriate connector."""
+def _fetch_ohlcv(source: str, symbol: str, timeframe: str) -> pd.DataFrame:
+    """Fetch OHLCV history for ``symbol`` using the bot's configured timeframe."""
     try:
         connector: DataSourceBase = _CONNECTOR_REGISTRY[source]()
-        return connector.get_historical(symbol, _SIGNAL_PERIOD)
+        return connector.get_historical(symbol, timeframe)
     except Exception as exc:
         logger.warning("_fetch_ohlcv(%s, %s): %s", source, symbol, exc)
         return pd.DataFrame()
@@ -112,21 +107,23 @@ def _fetch_price(source: str, symbol: str) -> float:
         return float("nan")
 
 
-def _compute_confluence(df: pd.DataFrame) -> int:
+def _compute_confluence(df: pd.DataFrame, strategy_filter: list[str]) -> int:
     """
-    Compute a multi-strategy confluence score without Streamlit dependencies.
+    Compute a confluence score using only the strategies in ``strategy_filter``.
 
-    Runs all four built-in strategies with default parameters.  Each strategy
-    that ends in an active position (``position == 1`` on the last bar)
-    contributes +1 to the score.  No sentiment adjustment is applied.
-
-    Returns a score in [0, 4].
+    Each active strategy (``position == 1`` on the last bar) contributes +1.
+    Returns 0 if the DataFrame has fewer than ``_MIN_BARS`` rows.
+    No Streamlit calls — safe outside a Streamlit session.
     """
-    if df.empty or len(df) < 60:
+    if df.empty or len(df) < _MIN_BARS:
         return 0
 
     raw_score: int = 0
-    for name, fn in _STRATEGIES:
+    for key in strategy_filter:
+        fn = _STRATEGY_MAP.get(key)
+        if fn is None:
+            logger.warning("Unknown strategy key %r — skipping.", key)
+            continue
         try:
             enriched = fn(df.copy())
             if "position" in enriched.columns:
@@ -134,7 +131,7 @@ def _compute_confluence(df: pd.DataFrame) -> int:
                 if pd.notna(last_val):
                     raw_score += int(last_val)
         except Exception as exc:
-            logger.warning("Strategy '%s' failed: %s", name, exc)
+            logger.warning("Strategy '%s' failed: %s", key, exc)
     return raw_score
 
 
@@ -143,52 +140,106 @@ def _compute_confluence(df: pd.DataFrame) -> int:
 # ---------------------------------------------------------------------------
 
 
-def check_and_execute(portfolio: Portfolio) -> list[dict[str, Any]]:
+def check_and_execute(
+    portfolio: Portfolio,
+    bot_config: BotConfig,
+) -> list[dict[str, Any]]:
     """
-    Scan all assets and execute buy / sell actions based on confluence scores.
+    Evaluate signals for every asset and execute trades for one bot cycle.
+
+    Execution order
+    ---------------
+    1. Fetch current prices for all open positions.
+    2. Run stop-loss / take-profit checks → close triggered positions first.
+    3. For each asset, compute a filtered confluence score.
+    4. Apply sell rule (score ≤ sell_threshold) then buy rule (score ≥ min_confluence).
 
     Parameters
     ----------
     portfolio:
-        Live ``Portfolio`` instance whose cash and positions are updated in
-        place (the underlying SQLite state is mutated).
+        Bound ``Portfolio`` instance (must match ``bot_config``).
+    bot_config:
+        Full bot configuration — strategy filter, timeframe, thresholds, etc.
 
     Returns
     -------
     list[dict]
-        One dict per executed action with keys:
-        ``action`` (``"buy"`` | ``"sell"``), ``label``, ``symbol``,
-        ``source``, ``price``, ``score``, and trade details for sells.
+        One dict per executed action.  Common keys: ``action``, ``label``,
+        ``symbol``, ``source``, ``price``, ``score``, ``reason``.
     """
     actions: list[dict[str, Any]] = []
+    sell_threshold: int = max(0, bot_config.min_confluence - 2)
 
-    # Build a lookup: symbol -> list of open position dicts
-    all_open: list[dict[str, Any]] = _db.get_open_positions()
+    # ------------------------------------------------------------------
+    # 1. Fetch prices for all currently open positions
+    # ------------------------------------------------------------------
+    open_positions = _db.get_open_positions(bot_config.bot_id)
     open_by_symbol: dict[str, list[dict[str, Any]]] = {}
-    for pos in all_open:
+    for pos in open_positions:
         open_by_symbol.setdefault(pos["symbol"], []).append(pos)
 
+    position_prices: dict[str, float] = {}
+    for symbol, positions in open_by_symbol.items():
+        price = _fetch_price(positions[0]["source"], symbol)
+        if not math.isnan(price):
+            position_prices[symbol] = price
+
+    # ------------------------------------------------------------------
+    # 2. Stop-loss / take-profit exits (before scanning for new signals)
+    # ------------------------------------------------------------------
+    sl_tp_exits = portfolio.check_stop_loss_take_profit(position_prices)
+    for exit_info in sl_tp_exits:
+        pos_id: int = exit_info["position_id"]
+        symbol: str = exit_info["symbol"]
+        exit_price: float = exit_info["current_price"]
+        reason: str = exit_info["reason"]
+
+        trade = portfolio.sell(pos_id, symbol, exit_price, reason=reason)
+        if trade:
+            actions.append(
+                {
+                    "action": "sell",
+                    "label": symbol,
+                    "symbol": symbol,
+                    "source": trade.get("source", ""),
+                    "price": exit_price,
+                    "score": None,
+                    "reason": reason,
+                    **trade,
+                }
+            )
+            # Remove from open_by_symbol so the asset is skipped below.
+            open_by_symbol.pop(symbol, None)
+
+    # Refresh open positions after SL/TP exits.
+    open_positions_fresh = _db.get_open_positions(bot_config.bot_id)
+    open_by_symbol_fresh: dict[str, list[dict[str, Any]]] = {}
+    for pos in open_positions_fresh:
+        open_by_symbol_fresh.setdefault(pos["symbol"], []).append(pos)
+
+    # ------------------------------------------------------------------
+    # 3 & 4. Signal scan — sell weak, buy strong
+    # ------------------------------------------------------------------
     for label, asset_cfg in ALL_ASSETS.items():
         source: str = asset_cfg["source"]
-        symbol: str = asset_cfg["id"]
+        symbol = asset_cfg["id"]
 
-        logger.debug("Evaluating %s (%s)…", label, symbol)
+        logger.debug("[%s] Evaluating %s (%s)…", bot_config.bot_id, label, symbol)
 
-        # --- Fetch data and compute score -----------------------------------
-        df = _fetch_ohlcv(source, symbol)
-        score = _compute_confluence(df)
-        logger.debug("%s confluence score = %d", label, score)
+        df = _fetch_ohlcv(source, symbol, bot_config.timeframe)
+        score = _compute_confluence(df, bot_config.strategy_filter)
+        logger.debug("[%s] %s score=%d", bot_config.bot_id, label, score)
 
-        # --- Fetch current market price for order sizing / fills ------------
-        current_price = _fetch_price(source, symbol)
-        if current_price != current_price:  # NaN check without math.isnan
-            logger.warning("%s: could not fetch price, skipping.", label)
+        # Reuse already-fetched price when available; otherwise fetch now.
+        current_price = position_prices.get(symbol) or _fetch_price(source, symbol)
+        if math.isnan(current_price):
+            logger.warning("[%s] %s: price unavailable, skipping.", bot_config.bot_id, label)
             continue
 
-        # --- Sell logic -----------------------------------------------------
-        if score <= 1 and symbol in open_by_symbol:
-            for pos in open_by_symbol[symbol]:
-                trade = portfolio.sell(pos["id"], symbol, current_price)
+        # --- Sell on weak signal ------------------------------------------
+        if score <= sell_threshold and symbol in open_by_symbol_fresh:
+            for pos in open_by_symbol_fresh[symbol]:
+                trade = portfolio.sell(pos["id"], symbol, current_price, reason="signal")
                 if trade:
                     actions.append(
                         {
@@ -198,17 +249,20 @@ def check_and_execute(portfolio: Portfolio) -> list[dict[str, Any]]:
                             "source": source,
                             "price": current_price,
                             "score": score,
+                            "reason": "signal",
                             **trade,
                         }
                     )
 
-        # --- Buy logic ------------------------------------------------------
-        elif score >= 3 and symbol not in open_by_symbol:
-            allocation = portfolio.cash * _MAX_ALLOCATION
+        # --- Buy on strong signal -----------------------------------------
+        elif score >= bot_config.min_confluence and symbol not in open_by_symbol_fresh:
+            allocation = portfolio.cash * bot_config.max_position_pct
             if allocation <= 0 or current_price <= 0:
                 continue
             shares = allocation / current_price
-            success = portfolio.buy(symbol, source, current_price, shares, "confluence")
+            success = portfolio.buy(
+                symbol, source, current_price, shares, strategy=bot_config.bot_id
+            )
             if success:
                 actions.append(
                     {
@@ -218,9 +272,11 @@ def check_and_execute(portfolio: Portfolio) -> list[dict[str, Any]]:
                         "source": source,
                         "price": current_price,
                         "score": score,
+                        "reason": "signal",
                         "shares": shares,
                         "allocation": allocation,
                     }
                 )
 
     return actions
+

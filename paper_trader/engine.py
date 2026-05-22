@@ -1,21 +1,22 @@
 """
 paper_trader.engine
 ===================
-Main scheduling loop for the paper trading engine.
+Multi-bot scheduling loop.
 
-Runs ``check_and_execute`` every 4 hours using the ``schedule`` library.
-Each action is logged to stdout with a UTC timestamp.  All exceptions are
-caught and logged so a transient network or data error never terminates the
-loop.
+Creates one ``Portfolio`` instance per bot at start-up, then runs a full
+signal-scan-and-execute cycle every 4 hours.  Each bot runs sequentially
+inside the cycle with a 2-second pause between them; a per-bot try/except
+guarantees that one failing bot cannot abort the others.
 
-Usage
------
-    python -m paper_trader.engine          # from project root
-    python paper_trader/engine.py          # from project root
+Entry point
+-----------
+Run as a module::
 
-The engine is intentionally a standalone process; it does not require the
-Streamlit server to be running.  The Streamlit monitor reads the same
-SQLite database and reflects the state written by this process.
+    python -m paper_trader.engine
+
+or, via the ``paper_engine`` Docker service::
+
+    python -m paper_trader.engine
 """
 
 from __future__ import annotations
@@ -24,11 +25,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Any
+
+import schedule
 
 # ---------------------------------------------------------------------------
-# Path bootstrap — must happen before any trd_auto or paper_trader imports.
+# Path bootstrap
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_HERE)
@@ -39,88 +40,73 @@ for _p in (_PROJECT_ROOT, _TRDAUTO):
         sys.path.insert(0, _p)
 
 # ---------------------------------------------------------------------------
-# Third-party / project imports (after path setup)
+# Local imports (after path bootstrap)
 # ---------------------------------------------------------------------------
-import schedule  # noqa: E402
-
+from paper_trader.bots import BOTS  # noqa: E402
 from paper_trader.executor import check_and_execute  # noqa: E402
 from paper_trader.portfolio import Portfolio  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Logging configuration
+# Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s UTC  %(levelname)-8s  %(name)s — %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
 )
-logger = logging.getLogger("paper_trader.engine")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared portfolio instance (created once; all state lives in SQLite)
+# Bot portfolio registry (initialised once at startup)
 # ---------------------------------------------------------------------------
-_portfolio: Portfolio = Portfolio(initial_capital=10_000.0)
+_portfolios: dict[str, Portfolio] = {}
+
+
+def _init_portfolios() -> None:
+    """Create one Portfolio per bot and register it in ``_portfolios``."""
+    for bot_id, bot_cfg in BOTS.items():
+        _portfolios[bot_id] = Portfolio(bot_cfg)
+    logger.info("Initialised %d bot portfolios.", len(_portfolios))
 
 
 # ---------------------------------------------------------------------------
-# Scheduled job
+# Cycle
 # ---------------------------------------------------------------------------
 
 
 def _run_cycle() -> None:
-    """Execute one signal-scan cycle and log every action."""
-    now_utc = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    logger.info("=== Cycle start  %s ===", now_utc)
+    """Execute one full signal-scan cycle across all bots."""
+    logger.info("=== Starting trading cycle ===")
 
-    try:
-        actions: list[dict[str, Any]] = check_and_execute(_portfolio)
-    except Exception as exc:
-        logger.exception("check_and_execute raised an unexpected error: %s", exc)
-        return
+    for bot_id, bot_cfg in BOTS.items():
+        portfolio = _portfolios.get(bot_id)
+        if portfolio is None:
+            logger.error("No portfolio for bot_id=%r — skipping.", bot_id)
+            continue
 
-    if not actions:
-        logger.info("No actions taken this cycle.")
-    else:
-        for action in actions:
-            _log_action(action)
+        logger.info("--- Bot: %s (%s) ---", bot_cfg.name, bot_id)
+        try:
+            actions = check_and_execute(portfolio, bot_cfg)
+            if actions:
+                for act in actions:
+                    logger.info(
+                        "[%s] %s %s @ %.4f  score=%s  reason=%s",
+                        bot_id,
+                        act.get("action", "?").upper(),
+                        act.get("symbol", "?"),
+                        act.get("price", 0.0),
+                        act.get("score"),
+                        act.get("reason", "?"),
+                    )
+            else:
+                logger.info("[%s] No trades this cycle.", bot_id)
+        except Exception as exc:
+            logger.error("[%s] Cycle failed: %s", bot_id, exc, exc_info=True)
 
-    logger.info("=== Cycle end    %s ===", now_utc)
+        # Brief pause to avoid hammering rate-limited APIs.
+        time.sleep(2)
 
-
-def _log_action(action: dict[str, Any]) -> None:
-    """Format and emit a single action as an INFO log line."""
-    ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    verb = action.get("action", "?").upper()
-    label = action.get("label", action.get("symbol", "?"))
-    price = action.get("price", float("nan"))
-    score = action.get("score", "?")
-
-    if verb == "BUY":
-        shares = action.get("shares", float("nan"))
-        alloc = action.get("allocation", float("nan"))
-        logger.info(
-            "[%s]  BUY   %-20s  score=%s  shares=%.6f  @%.4f  cost=%.2f",
-            ts,
-            label,
-            score,
-            shares,
-            price,
-            alloc,
-        )
-    elif verb == "SELL":
-        pnl = action.get("pnl", float("nan"))
-        pnl_pct = action.get("pnl_pct", float("nan"))
-        logger.info(
-            "[%s]  SELL  %-20s  score=%s  @%.4f  pnl=%.2f (%.2f%%)",
-            ts,
-            label,
-            score,
-            price,
-            pnl,
-            pnl_pct,
-        )
-    else:
-        logger.info("[%s]  %s  %s", ts, verb, action)
+    logger.info("=== Cycle complete ===")
 
 
 # ---------------------------------------------------------------------------
@@ -129,26 +115,21 @@ def _log_action(action: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    """Bootstrap the scheduler and block forever."""
-    logger.info("Paper trading engine starting.  Initial capital: %.2f", _portfolio.cash)
+    logger.info("Paper trading engine starting up…")
+    _init_portfolios()
 
-    # Run once immediately on startup, then every 4 hours.
+    # Run immediately on startup so there is data from the first second.
     _run_cycle()
-    schedule.every(4).hours.do(_run_cycle)
 
-    logger.info("Scheduler active — next run in 4 hours.  Press Ctrl+C to stop.")
+    # Then repeat every 4 hours.
+    schedule.every(4).hours.do(_run_cycle)
+    logger.info("Scheduler armed — next run in 4 hours.")
+
     while True:
-        try:
-            schedule.run_pending()
-            time.sleep(60)
-        except KeyboardInterrupt:
-            logger.info("Engine stopped by user.")
-            break
-        except Exception as exc:
-            logger.exception("Unexpected error in scheduler loop: %s", exc)
-            # Continue running after logging the error.
-            time.sleep(60)
+        schedule.run_pending()
+        time.sleep(30)
 
 
 if __name__ == "__main__":
     main()
+

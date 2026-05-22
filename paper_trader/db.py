@@ -1,7 +1,7 @@
 """
 paper_trader.db
 ===============
-SQLite persistence layer for the paper trading engine.
+SQLite persistence layer for the multi-bot paper trading engine.
 
 Uses only the standard-library ``sqlite3`` module.  All public functions
 are wrapped in try/except blocks so that database failures never crash the
@@ -14,11 +14,19 @@ Database file
 
 Tables
 ------
-portfolio : id, created_at, initial_capital REAL, current_capital REAL
-positions : id, symbol, source, entry_price REAL, shares REAL,
+portfolio : bot_id TEXT PRIMARY KEY, created_at, initial_capital REAL,
+            current_capital REAL
+positions : id, bot_id TEXT, symbol, source, entry_price REAL, shares REAL,
             entry_date TEXT, strategy TEXT, status TEXT (open/closed)
-trades    : id, symbol, source, strategy, entry_price REAL, exit_price REAL,
-            shares REAL, entry_date TEXT, exit_date TEXT, pnl REAL, pnl_pct REAL
+trades    : id, bot_id TEXT, symbol, source, strategy, entry_price REAL,
+            exit_price REAL, shares REAL, entry_date TEXT, exit_date TEXT,
+            pnl REAL, pnl_pct REAL, reason TEXT
+
+Backward compatibility
+----------------------
+When an existing ``paper_trader.db`` is detected (tables already present),
+``_migrate_schema`` adds the new columns via ``ALTER TABLE … ADD COLUMN``
+statements that are silently ignored if the column already exists.
 """
 
 from __future__ import annotations
@@ -27,28 +35,31 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from paper_trader.bots import BotConfig
 
 logger = logging.getLogger(__name__)
 
-# Database lives at the project root (one level above paper_trader/) so that
-# both the Streamlit dashboard and the engine container share the same file
-# via a single bind-mount: ./paper_trader.db:/app/paper_trader.db
+# Database lives at the project root so both containers share a single bind-mount.
 _DB_PATH: str = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "paper_trader.db",
 )
 
+# DDL for a clean (new) database.
 _DDL: str = """
 CREATE TABLE IF NOT EXISTS portfolio (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at      TEXT    NOT NULL,
-    initial_capital REAL    NOT NULL,
-    current_capital REAL    NOT NULL
+    bot_id          TEXT PRIMARY KEY,
+    created_at      TEXT NOT NULL,
+    initial_capital REAL NOT NULL,
+    current_capital REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS positions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id      TEXT    NOT NULL DEFAULT '',
     symbol      TEXT    NOT NULL,
     source      TEXT    NOT NULL,
     entry_price REAL    NOT NULL,
@@ -60,6 +71,7 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE TABLE IF NOT EXISTS trades (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id      TEXT    NOT NULL DEFAULT '',
     symbol      TEXT    NOT NULL,
     source      TEXT    NOT NULL,
     strategy    TEXT    NOT NULL,
@@ -69,7 +81,8 @@ CREATE TABLE IF NOT EXISTS trades (
     entry_date  TEXT    NOT NULL,
     exit_date   TEXT    NOT NULL,
     pnl         REAL    NOT NULL,
-    pnl_pct     REAL    NOT NULL
+    pnl_pct     REAL    NOT NULL,
+    reason      TEXT    NOT NULL DEFAULT 'signal'
 );
 """
 
@@ -81,24 +94,63 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """
+    Add columns introduced in the multi-bot refactor to existing tables.
+
+    Each ALTER TABLE is wrapped in its own try/except so that a column that
+    already exists (``OperationalError: duplicate column name``) is silently
+    skipped without aborting the migration.
+    """
+    migrations: list[tuple[str, str, str]] = [
+        ("positions", "bot_id", "TEXT NOT NULL DEFAULT ''"),
+        ("trades",    "bot_id", "TEXT NOT NULL DEFAULT ''"),
+        ("trades",    "reason", "TEXT NOT NULL DEFAULT 'signal'"),
+        # portfolio.bot_id is the PRIMARY KEY in new databases; for legacy
+        # databases that used an auto-increment id we add it as a plain column.
+        ("portfolio", "bot_id", "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for table, column, definition in migrations:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            logger.info("Schema migration: added %s.%s", table, column)
+        except sqlite3.OperationalError:
+            pass  # column already exists — nothing to do
+
+
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
 
 
-def init_db(initial_capital: float = 10_000.0) -> None:
-    """Create all tables and seed the portfolio row if the database is empty."""
+def init_db(bots: "dict[str, BotConfig]") -> None:
+    """
+    Create all tables and seed one portfolio row per bot if not already present.
+
+    Safe to call multiple times — idempotent for both fresh and existing databases.
+
+    Parameters
+    ----------
+    bots:
+        The full ``BOTS`` registry from ``paper_trader.bots``.
+    """
     try:
         with _connect() as conn:
             conn.executescript(_DDL)
-            count: int = conn.execute("SELECT COUNT(*) FROM portfolio").fetchone()[0]
-            if count == 0:
-                now = datetime.now(tz=timezone.utc).isoformat()
-                conn.execute(
-                    "INSERT INTO portfolio (created_at, initial_capital, current_capital)"
-                    " VALUES (?, ?, ?)",
-                    (now, initial_capital, initial_capital),
-                )
+            _migrate_schema(conn)
+
+            now = datetime.now(tz=timezone.utc).isoformat()
+            for bot_id, cfg in bots.items():
+                existing = conn.execute(
+                    "SELECT 1 FROM portfolio WHERE bot_id = ?", (bot_id,)
+                ).fetchone()
+                if existing is None:
+                    conn.execute(
+                        "INSERT INTO portfolio"
+                        " (bot_id, created_at, initial_capital, current_capital)"
+                        " VALUES (?, ?, ?, ?)",
+                        (bot_id, now, cfg.initial_capital, cfg.initial_capital),
+                    )
     except sqlite3.Error as exc:
         logger.error("init_db failed: %s", exc)
 
@@ -108,30 +160,76 @@ def init_db(initial_capital: float = 10_000.0) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_portfolio() -> dict[str, Any]:
-    """Return the single portfolio row as a dict, or ``{}`` on failure."""
+def get_portfolio(bot_id: str) -> dict[str, Any]:
+    """Return the portfolio row for ``bot_id`` as a dict, or ``{}`` on failure."""
     try:
         with _connect() as conn:
             row = conn.execute(
-                "SELECT * FROM portfolio ORDER BY id LIMIT 1"
+                "SELECT * FROM portfolio WHERE bot_id = ?", (bot_id,)
             ).fetchone()
             return dict(row) if row else {}
     except sqlite3.Error as exc:
-        logger.error("get_portfolio failed: %s", exc)
+        logger.error("get_portfolio(%s) failed: %s", bot_id, exc)
         return {}
 
 
-def update_capital(new_capital: float) -> None:
-    """Overwrite ``current_capital`` on the portfolio row."""
+def update_capital(bot_id: str, new_capital: float) -> None:
+    """Overwrite ``current_capital`` for the given bot."""
     try:
         with _connect() as conn:
             conn.execute(
-                "UPDATE portfolio SET current_capital = ?"
-                " WHERE id = (SELECT id FROM portfolio ORDER BY id LIMIT 1)",
-                (new_capital,),
+                "UPDATE portfolio SET current_capital = ? WHERE bot_id = ?",
+                (new_capital, bot_id),
             )
     except sqlite3.Error as exc:
-        logger.error("update_capital failed: %s", exc)
+        logger.error("update_capital(%s) failed: %s", bot_id, exc)
+
+
+def get_all_portfolios() -> list[dict[str, Any]]:
+    """
+    Return one summary dict per bot, including live stats from positions/trades.
+
+    Keys per row
+    ------------
+    bot_id, created_at, initial_capital, current_capital,
+    num_open_positions (int), num_closed_trades (int), win_rate (float 0–100).
+    """
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM portfolio ORDER BY bot_id"
+            ).fetchall()
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                bot_id: str = row["bot_id"]
+                num_open: int = conn.execute(
+                    "SELECT COUNT(*) FROM positions"
+                    " WHERE bot_id = ? AND status = 'open'",
+                    (bot_id,),
+                ).fetchone()[0]
+                num_closed: int = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE bot_id = ?", (bot_id,)
+                ).fetchone()[0]
+                num_wins: int = conn.execute(
+                    "SELECT COUNT(*) FROM trades WHERE bot_id = ? AND pnl > 0",
+                    (bot_id,),
+                ).fetchone()[0]
+                win_rate: float = (
+                    num_wins / num_closed * 100.0 if num_closed > 0 else 0.0
+                )
+                d = dict(row)
+                d.update(
+                    {
+                        "num_open_positions": num_open,
+                        "num_closed_trades": num_closed,
+                        "win_rate": win_rate,
+                    }
+                )
+                result.append(d)
+            return result
+    except sqlite3.Error as exc:
+        logger.error("get_all_portfolios failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +238,7 @@ def update_capital(new_capital: float) -> None:
 
 
 def open_position(
+    bot_id: str,
     symbol: str,
     source: str,
     entry_price: float,
@@ -152,21 +251,36 @@ def open_position(
             now = datetime.now(tz=timezone.utc).isoformat()
             cursor = conn.execute(
                 "INSERT INTO positions"
-                " (symbol, source, entry_price, shares, entry_date, strategy, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, 'open')",
-                (symbol, source, entry_price, shares, now, strategy),
+                " (bot_id, symbol, source, entry_price, shares, entry_date, strategy, status)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+                (bot_id, symbol, source, entry_price, shares, now, strategy),
             )
             return cursor.lastrowid or -1
     except sqlite3.Error as exc:
-        logger.error("open_position(%s) failed: %s", symbol, exc)
+        logger.error("open_position(%s, %s) failed: %s", bot_id, symbol, exc)
         return -1
 
 
-def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
+def close_position(
+    position_id: int,
+    exit_price: float,
+    reason: str = "signal",
+) -> dict[str, Any]:
     """
     Mark a position as closed, record the trade, and return the trade dict.
 
-    Returns ``{}`` if the position is not found or the operation fails.
+    Parameters
+    ----------
+    position_id:
+        Primary key of the open position row.
+    exit_price:
+        Price at which the position is closed.
+    reason:
+        Exit reason — ``"signal"``, ``"stop_loss"``, or ``"take_profit"``.
+
+    Returns
+    -------
+    dict with all trade fields, or ``{}`` if the position is not found.
     """
     try:
         with _connect() as conn:
@@ -190,10 +304,11 @@ def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
 
             conn.execute(
                 "INSERT INTO trades"
-                " (symbol, source, strategy, entry_price, exit_price, shares,"
-                "  entry_date, exit_date, pnl, pnl_pct)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " (bot_id, symbol, source, strategy, entry_price, exit_price, shares,"
+                "  entry_date, exit_date, pnl, pnl_pct, reason)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
+                    pos["bot_id"],
                     pos["symbol"],
                     pos["source"],
                     pos["strategy"],
@@ -204,6 +319,7 @@ def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
                     exit_date,
                     pnl,
                     pnl_pct,
+                    reason,
                 ),
             )
             conn.execute(
@@ -212,6 +328,7 @@ def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
             )
 
             return {
+                "bot_id": pos["bot_id"],
                 "symbol": pos["symbol"],
                 "source": pos["source"],
                 "strategy": pos["strategy"],
@@ -222,6 +339,7 @@ def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
                 "exit_date": exit_date,
                 "pnl": pnl,
                 "pnl_pct": pnl_pct,
+                "reason": reason,
             }
     except sqlite3.Error as exc:
         logger.error("close_position(%d) failed: %s", position_id, exc)
@@ -233,27 +351,32 @@ def close_position(position_id: int, exit_price: float) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def get_open_positions() -> list[dict[str, Any]]:
-    """Return all open positions ordered by entry date."""
+def get_open_positions(bot_id: str) -> list[dict[str, Any]]:
+    """Return all open positions for ``bot_id``, ordered by entry date."""
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM positions WHERE status = 'open' ORDER BY entry_date"
+                "SELECT * FROM positions"
+                " WHERE bot_id = ? AND status = 'open'"
+                " ORDER BY entry_date",
+                (bot_id,),
             ).fetchall()
             return [dict(r) for r in rows]
     except sqlite3.Error as exc:
-        logger.error("get_open_positions failed: %s", exc)
+        logger.error("get_open_positions(%s) failed: %s", bot_id, exc)
         return []
 
 
-def get_trade_history() -> list[dict[str, Any]]:
-    """Return all closed trades, newest first."""
+def get_trade_history(bot_id: str) -> list[dict[str, Any]]:
+    """Return all closed trades for ``bot_id``, newest first."""
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM trades ORDER BY exit_date DESC"
+                "SELECT * FROM trades WHERE bot_id = ? ORDER BY exit_date DESC",
+                (bot_id,),
             ).fetchall()
             return [dict(r) for r in rows]
     except sqlite3.Error as exc:
-        logger.error("get_trade_history failed: %s", exc)
+        logger.error("get_trade_history(%s) failed: %s", bot_id, exc)
         return []
+
