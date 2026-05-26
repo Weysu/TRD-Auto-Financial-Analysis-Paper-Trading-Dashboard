@@ -7,6 +7,7 @@ No DB reads or writes.  Registered as a page in app.py.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from datetime import date, timedelta
@@ -307,6 +308,18 @@ def backtest_bot_page() -> None:
         bot_cfg = BOTS[bot_id]
         st.caption(BOT_TOOLTIPS.get(bot_id, ""))
         st.divider()
+        st.caption("Initial Capital")
+        capital: float = st.number_input(
+            "Initial Capital",
+            min_value=100.0,
+            max_value=10_000_000.0,
+            value=float(bot_cfg.initial_capital),
+            step=1000.0,
+            format="%.0f",
+            label_visibility="collapsed",
+            key="sim_capital",
+        )
+        st.divider()
         run_clicked = st.button(
             "Run Simulation",
             use_container_width=True,
@@ -325,9 +338,12 @@ def backtest_bot_page() -> None:
     )
 
     # ------------------------------------------------------------------
-    # Cache key: invalidate when bot changes
+    # Cache key: invalidate when bot or capital changes
     # ------------------------------------------------------------------
-    cache_key = f"_sim_result_{bot_id}"
+    cache_key = f"_sim_result_{bot_id}_{int(capital)}"
+
+    # Override initial_capital with the user-selected value
+    sim_cfg = dataclasses.replace(bot_cfg, initial_capital=capital)
 
     if run_clicked or cache_key not in st.session_state:
         with st.spinner("Loading historical data..."):
@@ -338,7 +354,7 @@ def backtest_bot_page() -> None:
             return
 
         with st.spinner("Running simulation..."):
-            result = run_simulation(bot_cfg, all_data)
+            result = run_simulation(sim_cfg, all_data)
 
         st.session_state[cache_key] = (result, all_data)
     else:
