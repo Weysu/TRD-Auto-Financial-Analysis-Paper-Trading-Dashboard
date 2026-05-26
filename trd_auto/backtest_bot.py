@@ -284,6 +284,134 @@ def _render_trade_log(result: SimulationResult) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Walk Forward Analysis
+# ---------------------------------------------------------------------------
+
+def _render_walk_forward(result: SimulationResult) -> None:
+    """Permanent walk-forward section: split snapshots 70/30, compare IS vs OOS."""
+    snaps = result.snapshots
+    n = len(snaps)
+    split_idx = int(n * 0.70)
+    oos_count = n - split_idx
+
+    if oos_count < 15:
+        st.caption("Not enough data \u2014 use 3M or 1Y")
+        return
+
+    # ---- equity series ----
+    all_dates   = [s["date"]   for s in snaps]
+    all_equity  = [s["equity"] for s in snaps]
+
+    snaps_is  = snaps[:split_idx]
+    snaps_oos = snaps[split_idx:]
+
+    dates_is   = [s["date"]   for s in snaps_is]
+    equity_is  = [s["equity"] for s in snaps_is]
+    dates_oos  = [s["date"]   for s in snaps_oos]
+    equity_oos = [s["equity"] for s in snaps_oos]
+
+    split_date = snaps_oos[0]["date"]
+
+    # ---- Sharpe ratios ----
+    ser_is  = pd.Series(equity_is,  index=pd.DatetimeIndex(dates_is))
+    ser_oos = pd.Series(equity_oos, index=pd.DatetimeIndex(dates_oos))
+    sharpe_is  = _sharpe(ser_is)
+    sharpe_oos = _sharpe(ser_oos)
+
+    # ---- 3-trace chart ----
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=all_dates, y=all_equity,
+        name="Full Period",
+        line=dict(color="#90a4ae", width=1.5, dash="dash"),
+        opacity=0.5,
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates_is, y=equity_is,
+        name="In-Sample (70%)",
+        line=dict(color="#7986cb", width=2),
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates_oos, y=equity_oos,
+        name="Out-of-Sample (30%)",
+        line=dict(color=_COLOR_UP, width=2),
+    ))
+
+    split_str = str(split_date)
+    fig.add_shape(
+        type="line",
+        x0=split_str, x1=split_str,
+        y0=0, y1=1,
+        xref="x", yref="paper",
+        line=dict(color=_COLOR_DN, width=2, dash="dash"),
+    )
+    fig.add_annotation(
+        x=split_str,
+        y=1,
+        xref="x", yref="paper",
+        text="Split 70%",
+        showarrow=False,
+        font=dict(color=_COLOR_DN),
+        yanchor="bottom",
+    )
+
+    fig.update_layout(
+        height=380,
+        plot_bgcolor=_BG,
+        paper_bgcolor=_BG,
+        font_color=_TEXT,
+        margin=dict(l=0, r=0, t=24, b=0),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=_TEXT, size=11),
+            orientation="h",
+            y=1.04,
+            x=0,
+        ),
+        xaxis=dict(showgrid=True, gridcolor=_GRID, linecolor=_GRID, color=_TEXT),
+        yaxis=dict(
+            showgrid=True,
+            gridcolor=_GRID,
+            linecolor=_GRID,
+            color=_TEXT,
+            side="right",
+            title="Portfolio Value (USD)",
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ---- Sharpe metrics ----
+    col_is, col_oos = st.columns(2)
+    with col_is:
+        st.metric("Sharpe \u2014 In-Sample (70%)", f"{sharpe_is:.2f}")
+    with col_oos:
+        st.metric("Sharpe \u2014 Out-of-Sample (30%)", f"{sharpe_oos:.2f}")
+
+    # ---- diagnostic ----
+    if sharpe_is <= 0:
+        st.error(
+            f"In-sample Sharpe ({sharpe_is:.2f}) \u2264 0 \u2014 "
+            "strategy is not profitable in-sample."
+        )
+    elif sharpe_oos >= 0.75 * sharpe_is:
+        st.success(
+            f"OOS Sharpe ({sharpe_oos:.2f}) \u2265 75\u202f% of IS Sharpe ({sharpe_is:.2f}) \u2014 "
+            "strategy appears robust out-of-sample."
+        )
+    elif sharpe_oos >= 0.50 * sharpe_is:
+        st.warning(
+            f"OOS Sharpe ({sharpe_oos:.2f}) is between 50\u202f% and 75\u202f% of IS Sharpe "
+            f"({sharpe_is:.2f}) \u2014 moderate degradation out-of-sample."
+        )
+    else:
+        st.error(
+            f"OOS Sharpe ({sharpe_oos:.2f}) is below 50\u202f% of IS Sharpe ({sharpe_is:.2f}) \u2014 "
+            "significant out-of-sample degradation."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Page entry point
 # ---------------------------------------------------------------------------
 
@@ -378,6 +506,10 @@ def backtest_bot_page() -> None:
 
     st.caption("Performance Metrics")
     _render_performance(result, bh_series)
+
+    st.divider()
+    st.caption("Walk Forward Analysis")
+    _render_walk_forward(result)
 
     st.divider()
     st.caption("Inspect Date")
