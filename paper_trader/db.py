@@ -88,9 +88,10 @@ CREATE TABLE IF NOT EXISTS trades (
 
 
 def _connect() -> sqlite3.Connection:
-    """Return a connection with row_factory set to ``sqlite3.Row``."""
+    """Return a connection with row_factory set to ``sqlite3.Row`` and WAL mode enabled."""
     conn = sqlite3.connect(_DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -201,6 +202,14 @@ def init_db(bots: "dict[str, BotConfig]") -> None:
             # no-ops and the bad schema persists).
             _migrate_schema(conn)
             conn.executescript(_DDL)
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_positions_bot_status
+                    ON positions (bot_id, status);
+                CREATE INDEX IF NOT EXISTS idx_trades_bot_id
+                    ON trades (bot_id);
+                """
+            )
 
             now = datetime.now(tz=timezone.utc).isoformat()
             for bot_id, cfg in bots.items():

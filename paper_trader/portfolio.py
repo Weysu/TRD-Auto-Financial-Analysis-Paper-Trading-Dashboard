@@ -245,3 +245,15 @@ class Portfolio:
         )
         return trade
 
+    # ------------------------------------------------------------------
+    # Position queries
+    # ------------------------------------------------------------------
+
+    def get_open_positions(self) -> list[dict[str, Any]]:
+        """Return all open positions for this bot."""
+        return db.get_open_positions(self._cfg.bot_id)
+
+    def get_open_symbols(self) -> set[str]:
+        """Return the set of symbols currently held by this bot."""
+        return {p["symbol"] for p in self.get_open_positions()}
+

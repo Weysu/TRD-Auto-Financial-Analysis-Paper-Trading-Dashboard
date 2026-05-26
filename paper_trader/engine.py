@@ -78,6 +78,12 @@ def _run_cycle() -> None:
     """Execute one full signal-scan cycle across all bots."""
     logger.info("=== Starting trading cycle ===")
 
+    # Shared OHLCV cache for this cycle — avoids redundant API calls across
+    # bots that operate on the same (source, symbol, timeframe) combination.
+    # The dict is discarded at the end of the function so stale data never
+    # carries over to the next cycle.
+    ohlcv_cache: dict[tuple[str, str, str], object] = {}
+
     for bot_id, bot_cfg in BOTS.items():
         portfolio = _portfolios.get(bot_id)
         if portfolio is None:
@@ -86,7 +92,7 @@ def _run_cycle() -> None:
 
         logger.info("--- Bot: %s (%s) ---", bot_cfg.name, bot_id)
         try:
-            actions = check_and_execute(portfolio, bot_cfg)
+            actions = check_and_execute(portfolio, bot_cfg, ohlcv_cache=ohlcv_cache)
             if actions:
                 for act in actions:
                     logger.info(

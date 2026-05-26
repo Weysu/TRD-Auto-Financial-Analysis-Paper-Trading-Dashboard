@@ -31,8 +31,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_HERE)
+_TRDAUTO = os.path.join(_PROJECT_ROOT, "trd_auto")
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+if _TRDAUTO not in sys.path:
+    sys.path.insert(0, _TRDAUTO)
 
 # ---------------------------------------------------------------------------
 # paper_trader imports
@@ -45,6 +48,14 @@ from paper_trader.db import (  # noqa: E402
     get_trade_history,
     init_db,
 )
+
+# ---------------------------------------------------------------------------
+# trd_auto connector imports (path bootstrap adds _TRDAUTO to sys.path above)
+# ---------------------------------------------------------------------------
+import math  # noqa: E402
+
+from data.connectors.coingecko import CoinGeckoConnector  # noqa: E402
+from data.connectors.yahoo_finance import YahooFinanceConnector  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Streamlit import (only safe inside the Streamlit process)
@@ -134,18 +145,63 @@ def _trades_df(bot_id: str) -> pd.DataFrame:
     return df
 
 
-def _equity_curve(bot_id: str, initial_capital: float) -> pd.DataFrame | None:
-    """Return a cumulative-PnL DataFrame for the equity curve, or ``None`` if empty."""
+_CONNECTOR_REGISTRY: dict[str, Any] = {
+    "yahoo": YahooFinanceConnector,
+    "coingecko": CoinGeckoConnector,
+}
+
+
+def _fetch_current_prices(positions: list[dict[str, Any]]) -> dict[str, float]:
+    """Fetch the latest market price for each open position.
+
+    Deduplicates by symbol so each connector is called at most once per symbol.
+    Falls back to ``entry_price`` for any symbol whose price cannot be retrieved.
+    """
+    prices: dict[str, float] = {}
+    for pos in positions:
+        symbol: str = pos["symbol"]
+        if symbol in prices:
+            continue
+        source: str = pos["source"]
+        try:
+            connector = _CONNECTOR_REGISTRY[source]()
+            quote = connector.get_quote(symbol)
+            price = float(quote.get("price", float("nan")))
+            prices[symbol] = price if not math.isnan(price) else pos["entry_price"]
+        except Exception:
+            prices[symbol] = pos["entry_price"]
+    return prices
+
+
+def _equity_curve(
+    bot_id: str,
+    initial_capital: float,
+    current_equity: float | None = None,
+) -> pd.DataFrame | None:
+    """Return a cumulative-PnL DataFrame for the equity curve, or ``None`` if empty.
+
+    If ``current_equity`` is provided, a final data point at the current UTC
+    timestamp is appended so the curve reflects unrealized PnL from open positions.
+    """
     trades = get_trade_history(bot_id)
-    if not trades:
-        return None
-    df = pd.DataFrame(trades)
-    if "pnl" not in df.columns or "exit_date" not in df.columns:
-        return None
-    df = df.sort_values("exit_date").reset_index(drop=True)
-    df["Equity ($)"] = initial_capital + df["pnl"].cumsum()
-    df["Date"] = pd.to_datetime(df["exit_date"])
-    return df[["Date", "Equity ($)"]]
+    if trades:
+        df = pd.DataFrame(trades)
+        if "pnl" not in df.columns or "exit_date" not in df.columns:
+            return None
+        df = df.sort_values("exit_date").reset_index(drop=True)
+        df["Equity ($)"] = initial_capital + df["pnl"].cumsum()
+        df["Date"] = pd.to_datetime(df["exit_date"], utc=True)
+        curve = df[["Date", "Equity ($)"]].copy()
+    else:
+        curve = pd.DataFrame(columns=["Date", "Equity ($)"])
+
+    if current_equity is not None:
+        now_row = pd.DataFrame(
+            [{"Date": pd.Timestamp.now(tz="UTC"), "Equity ($)": current_equity}]
+        )
+        curve = pd.concat([curve, now_row], ignore_index=True)
+
+    return curve if not curve.empty else None
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +263,18 @@ def paper_trading_page() -> None:
     portfolio_row = get_portfolio(selected_bot_id) or {}
     initial_cap: float = portfolio_row.get("initial_capital", selected_cfg.initial_capital)
     current_cap: float = portfolio_row.get("current_capital", initial_cap)
-    total_ret: float = (current_cap - initial_cap) / initial_cap * 100 if initial_cap else 0.0
-    open_pos_count = len(get_open_positions(selected_bot_id))
+    open_positions = get_open_positions(selected_bot_id)
+    open_pos_count = len(open_positions)
+
+    # Fetch live prices and compute mark-to-market equity.
+    with st.spinner("Fetching live prices…"):
+        live_prices = _fetch_current_prices(open_positions) if open_positions else {}
+    mtm: float = sum(
+        live_prices.get(p["symbol"], p["entry_price"]) * p["shares"]
+        for p in open_positions
+    )
+    equity: float = current_cap + mtm
+    total_ret: float = (equity - initial_cap) / initial_cap * 100 if initial_cap else 0.0
 
     # ------------------------------------------------------------------
     # 3. Detailed view
@@ -217,7 +283,7 @@ def paper_trading_page() -> None:
 
     # KPI tiles
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Equity", f"${current_cap:,.2f}")
+    col1.metric("Equity", f"${equity:,.2f}")
     col2.metric("Cash", f"${current_cap:,.2f}")
     col3.metric(
         "Total Return",
@@ -285,7 +351,7 @@ def paper_trading_page() -> None:
 
     # Equity curve
     st.subheader("Equity Curve")
-    curve = _equity_curve(selected_bot_id, initial_cap)
+    curve = _equity_curve(selected_bot_id, initial_cap, current_equity=equity)
     if curve is None or curve.empty:
         st.info("Not enough trade history to draw an equity curve.")
     else:

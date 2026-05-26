@@ -56,7 +56,6 @@ from data.strategies import (  # noqa: E402
 # ---------------------------------------------------------------------------
 from paper_trader.bots import BotConfig  # noqa: E402
 from paper_trader.portfolio import Portfolio  # noqa: E402
-from paper_trader import db as _db  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +106,27 @@ def _fetch_price(source: str, symbol: str) -> float:
         return float("nan")
 
 
-def _compute_confluence(df: pd.DataFrame, strategy_filter: list[str]) -> int:
+def _compute_confluence(
+    df: pd.DataFrame, strategy_filter: list[str]
+) -> tuple[int, list[str]]:
     """
     Compute a confluence score using only the strategies in ``strategy_filter``.
 
     Each active strategy (``position == 1`` on the last bar) contributes +1.
-    Returns 0 if the DataFrame has fewer than ``_MIN_BARS`` rows.
+    Returns ``(0, [])`` if the DataFrame has fewer than ``_MIN_BARS`` rows.
     No Streamlit calls — safe outside a Streamlit session.
+
+    Returns
+    -------
+    tuple[int, list[str]]
+        ``(raw_score, active_keys)`` where ``active_keys`` is the list of
+        strategy keys that returned ``position == 1`` on the last bar.
     """
     if df.empty or len(df) < _MIN_BARS:
-        return 0
+        return 0, []
 
     raw_score: int = 0
+    active_keys: list[str] = []
     for key in strategy_filter:
         fn = _STRATEGY_MAP.get(key)
         if fn is None:
@@ -128,11 +136,12 @@ def _compute_confluence(df: pd.DataFrame, strategy_filter: list[str]) -> int:
             enriched = fn(df.copy())
             if "position" in enriched.columns:
                 last_val = enriched["position"].iloc[-1]
-                if pd.notna(last_val):
-                    raw_score += int(last_val)
+                if pd.notna(last_val) and int(last_val) == 1:
+                    raw_score += 1
+                    active_keys.append(key)
         except Exception as exc:
             logger.warning("Strategy '%s' failed: %s", key, exc)
-    return raw_score
+    return raw_score, active_keys
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +152,7 @@ def _compute_confluence(df: pd.DataFrame, strategy_filter: list[str]) -> int:
 def check_and_execute(
     portfolio: Portfolio,
     bot_config: BotConfig,
+    ohlcv_cache: dict[tuple[str, str, str], pd.DataFrame] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Evaluate signals for every asset and execute trades for one bot cycle.
@@ -160,6 +170,12 @@ def check_and_execute(
         Bound ``Portfolio`` instance (must match ``bot_config``).
     bot_config:
         Full bot configuration — strategy filter, timeframe, thresholds, etc.
+    ohlcv_cache:
+        Optional shared cache for OHLCV DataFrames keyed by
+        ``(source, symbol, timeframe)``.  When provided, a cache hit skips the
+        API call entirely; a miss fetches and stores the result.  Pass the same
+        dict to every bot in a cycle to avoid redundant fetches across bots that
+        share a timeframe.  ``None`` disables caching (original behaviour).
 
     Returns
     -------
@@ -168,12 +184,11 @@ def check_and_execute(
         ``symbol``, ``source``, ``price``, ``score``, ``reason``.
     """
     actions: list[dict[str, Any]] = []
-    sell_threshold: int = max(0, bot_config.min_confluence - 2)
 
     # ------------------------------------------------------------------
     # 1. Fetch prices for all currently open positions
     # ------------------------------------------------------------------
-    open_positions = _db.get_open_positions(bot_config.bot_id)
+    open_positions = portfolio.get_open_positions()
     open_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for pos in open_positions:
         open_by_symbol.setdefault(pos["symbol"], []).append(pos)
@@ -212,7 +227,7 @@ def check_and_execute(
             open_by_symbol.pop(symbol, None)
 
     # Refresh open positions after SL/TP exits.
-    open_positions_fresh = _db.get_open_positions(bot_config.bot_id)
+    open_positions_fresh = portfolio.get_open_positions()
     open_by_symbol_fresh: dict[str, list[dict[str, Any]]] = {}
     for pos in open_positions_fresh:
         open_by_symbol_fresh.setdefault(pos["symbol"], []).append(pos)
@@ -226,9 +241,18 @@ def check_and_execute(
 
         logger.debug("[%s] Evaluating %s (%s)…", bot_config.bot_id, label, symbol)
 
-        df = _fetch_ohlcv(source, symbol, bot_config.timeframe)
-        score = _compute_confluence(df, bot_config.strategy_filter)
-        logger.debug("[%s] %s score=%d", bot_config.bot_id, label, score)
+        if ohlcv_cache is not None:
+            cache_key: tuple[str, str, str] = (source, symbol, bot_config.timeframe)
+            if cache_key in ohlcv_cache:
+                df = ohlcv_cache[cache_key]
+                logger.debug("[%s] %s OHLCV cache hit.", bot_config.bot_id, label)
+            else:
+                df = _fetch_ohlcv(source, symbol, bot_config.timeframe)
+                ohlcv_cache[cache_key] = df
+        else:
+            df = _fetch_ohlcv(source, symbol, bot_config.timeframe)
+        score, active_strategies = _compute_confluence(df, bot_config.strategy_filter)
+        logger.debug("[%s] %s score=%d strategies=%s", bot_config.bot_id, label, score, active_strategies)
 
         # Reuse already-fetched price when available; otherwise fetch now.
         current_price = position_prices.get(symbol) or _fetch_price(source, symbol)
@@ -237,7 +261,7 @@ def check_and_execute(
             continue
 
         # --- Sell on weak signal ------------------------------------------
-        if score <= sell_threshold and symbol in open_by_symbol_fresh:
+        if score <= bot_config.sell_threshold and symbol in open_by_symbol_fresh:
             for pos in open_by_symbol_fresh[symbol]:
                 trade = portfolio.sell(pos["id"], symbol, current_price, reason="signal")
                 if trade:
@@ -260,8 +284,9 @@ def check_and_execute(
             if allocation <= 0 or current_price <= 0:
                 continue
             shares = allocation / current_price
+            strategy_label: str = ",".join(active_strategies) if active_strategies else bot_config.bot_id
             success = portfolio.buy(
-                symbol, source, current_price, shares, strategy=bot_config.bot_id
+                symbol, source, current_price, shares, strategy=strategy_label
             )
             if success:
                 actions.append(

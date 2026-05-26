@@ -36,7 +36,11 @@ class BotConfig:
     min_confluence: int
     """Minimum confluence score required to open a new position."""
 
-    strategy_filter: list[str]
+    sell_threshold: int
+    """Maximum confluence score at which an open position is closed on signal.
+    Typically ``max(0, min_confluence - 2)``."""
+
+    strategy_filter: tuple[str, ...]
     """
     Subset of strategies to include in confluence scoring.
     Valid keys: ``"ma"``, ``"rsi"``, ``"bb"``, ``"macd"``.
@@ -68,7 +72,8 @@ BOTS: dict[str, BotConfig] = {
         initial_capital=10_000.0,
         max_position_pct=0.20,
         min_confluence=3,
-        strategy_filter=["ma", "rsi", "bb", "macd"],
+        sell_threshold=1,
+        strategy_filter=("ma", "rsi", "bb", "macd"),
         timeframe="1Y",
         stop_loss_pct=0.07,
         take_profit_pct=0.15,
@@ -80,7 +85,8 @@ BOTS: dict[str, BotConfig] = {
         initial_capital=10_000.0,
         max_position_pct=0.25,
         min_confluence=2,
-        strategy_filter=["macd"],
+        sell_threshold=0,
+        strategy_filter=("macd",),
         timeframe="3M",
         stop_loss_pct=0.05,
         take_profit_pct=0.12,
@@ -92,7 +98,8 @@ BOTS: dict[str, BotConfig] = {
         initial_capital=10_000.0,
         max_position_pct=0.20,
         min_confluence=2,
-        strategy_filter=["rsi", "bb"],
+        sell_threshold=0,
+        strategy_filter=("rsi", "bb"),
         timeframe="3M",
         stop_loss_pct=0.06,
         take_profit_pct=0.10,
@@ -104,7 +111,8 @@ BOTS: dict[str, BotConfig] = {
         initial_capital=10_000.0,
         max_position_pct=0.30,
         min_confluence=2,
-        strategy_filter=["ma"],
+        sell_threshold=0,
+        strategy_filter=("ma",),
         timeframe="1Y",
         stop_loss_pct=0.08,
         take_profit_pct=0.20,
@@ -116,7 +124,8 @@ BOTS: dict[str, BotConfig] = {
         initial_capital=10_000.0,
         max_position_pct=0.10,
         min_confluence=2,
-        strategy_filter=["macd", "rsi"],
+        sell_threshold=0,
+        strategy_filter=("macd", "rsi"),
         timeframe="1M",
         stop_loss_pct=0.03,
         take_profit_pct=0.06,
