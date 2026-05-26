@@ -54,10 +54,18 @@ class BotConfig:
     """
 
     stop_loss_pct: float
-    """Fraction below entry price that triggers a stop-loss exit (e.g. 0.07 = 7 %)."""
+    """Initial stop-loss: fraction below entry that triggers an exit (e.g. 0.07 = 7 %)."""
 
-    take_profit_pct: float
-    """Fraction above entry price that triggers a take-profit exit (e.g. 0.15 = 15 %)."""
+    take_profit_levels: tuple[dict, ...]
+    """
+    Ordered take-profit ladder.  Each dict must contain:
+
+    * ``target_pct`` (float | str): gain fraction from entry (e.g. ``0.10`` for 10 %),
+      or the string ``"trailing_5pct"`` (valid only as the *last* level).
+    * ``close_fraction`` (float): fraction of remaining shares to close (1.0 = all).
+    * ``move_sl_to`` (float | str | None): ``0.0`` → move SL to break-even;
+      ``"tp1"`` / ``"tp2"`` → move SL to that level's trigger price; ``None`` → no change.
+    """
 
     cycle_hours: int
     """How often (in hours) the engine should run this bot (e.g. 2, 4, 6, 8)."""
@@ -89,8 +97,12 @@ BOTS: dict[str, BotConfig] = {
         sell_threshold=0,
         strategy_filter=("ma", "macd"),
         timeframe="1Y",
-        stop_loss_pct=0.08,
-        take_profit_pct=0.20,
+        stop_loss_pct=0.05,
+        take_profit_levels=(
+            {"target_pct": 0.04, "close_fraction": 0.30, "move_sl_to": 0.0},
+            {"target_pct": 0.08, "close_fraction": 0.30, "move_sl_to": "tp1"},
+            {"target_pct": 0.15, "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=4,
         use_sentiment=False,
         use_trend_filter=False,
@@ -107,8 +119,11 @@ BOTS: dict[str, BotConfig] = {
         sell_threshold=0,
         strategy_filter=("rsi", "bb"),
         timeframe="3M",
-        stop_loss_pct=0.05,
-        take_profit_pct=0.10,
+        stop_loss_pct=0.04,
+        take_profit_levels=(
+            {"target_pct": 0.03, "close_fraction": 0.50, "move_sl_to": 0.0},
+            {"target_pct": 0.06, "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=4,
         use_sentiment=True,
         use_trend_filter=False,
@@ -126,8 +141,13 @@ BOTS: dict[str, BotConfig] = {
         sell_threshold=0,
         strategy_filter=("ma", "macd"),
         timeframe="1Y",
-        stop_loss_pct=0.06,
-        take_profit_pct=0.15,
+        stop_loss_pct=0.10,
+        take_profit_levels=(
+            {"target_pct": 0.08,            "close_fraction": 0.25, "move_sl_to": 0.0},
+            {"target_pct": 0.15,            "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.25,            "close_fraction": 0.25, "move_sl_to": "tp2"},
+            {"target_pct": "trailing_5pct", "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=6,
         use_sentiment=False,
         use_trend_filter=True,
@@ -145,7 +165,11 @@ BOTS: dict[str, BotConfig] = {
         strategy_filter=("ma", "rsi", "bb", "macd"),
         timeframe="1Y",
         stop_loss_pct=0.07,
-        take_profit_pct=0.18,
+        take_profit_levels=(
+            {"target_pct": 0.05, "close_fraction": 0.40, "move_sl_to": 0.0},
+            {"target_pct": 0.10, "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.18, "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=8,
         use_sentiment=True,
         use_trend_filter=True,
@@ -163,8 +187,12 @@ BOTS: dict[str, BotConfig] = {
         sell_threshold=2,
         strategy_filter=("ma", "rsi", "bb", "macd"),
         timeframe="1Y",
-        stop_loss_pct=0.05,
-        take_profit_pct=0.12,
+        stop_loss_pct=0.07,
+        take_profit_levels=(
+            {"target_pct": 0.05, "close_fraction": 0.40, "move_sl_to": 0.0},
+            {"target_pct": 0.10, "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.18, "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=6,
         use_sentiment=True,
         use_trend_filter=False,
@@ -181,8 +209,11 @@ BOTS: dict[str, BotConfig] = {
         sell_threshold=0,
         strategy_filter=("bb", "macd"),
         timeframe="3M",
-        stop_loss_pct=0.04,
-        take_profit_pct=0.08,
+        stop_loss_pct=0.02,
+        take_profit_levels=(
+            {"target_pct": 0.02, "close_fraction": 0.50, "move_sl_to": 0.0},
+            {"target_pct": 0.04, "close_fraction": 1.00, "move_sl_to": None},
+        ),
         cycle_hours=2,
         use_sentiment=False,
         use_trend_filter=False,

@@ -58,15 +58,23 @@ CREATE TABLE IF NOT EXISTS portfolio (
 );
 
 CREATE TABLE IF NOT EXISTS positions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    bot_id      TEXT    NOT NULL DEFAULT '',
-    symbol      TEXT    NOT NULL,
-    source      TEXT    NOT NULL,
-    entry_price REAL    NOT NULL,
-    shares      REAL    NOT NULL,
-    entry_date  TEXT    NOT NULL,
-    strategy    TEXT    NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'open'
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id           TEXT    NOT NULL DEFAULT '',
+    symbol           TEXT    NOT NULL,
+    source           TEXT    NOT NULL,
+    entry_price      REAL    NOT NULL,
+    shares           REAL    NOT NULL,
+    shares_remaining REAL,
+    entry_date       TEXT    NOT NULL,
+    strategy         TEXT    NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'open',
+    current_sl_pct   REAL,
+    current_sl_price REAL,
+    tp1_hit          INTEGER NOT NULL DEFAULT 0,
+    tp2_hit          INTEGER NOT NULL DEFAULT 0,
+    tp3_hit          INTEGER NOT NULL DEFAULT 0,
+    tp4_hit          INTEGER NOT NULL DEFAULT 0,
+    highest_price    REAL
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -162,9 +170,17 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # ------------------------------------------------------------------
     pos_cols = _table_columns(conn, "positions")
     _add_if_missing: list[tuple[str, str, str]] = [
-        ("positions", "bot_id", "TEXT NOT NULL DEFAULT ''"),
-        ("trades",    "bot_id", "TEXT NOT NULL DEFAULT ''"),
-        ("trades",    "reason", "TEXT NOT NULL DEFAULT 'signal'"),
+        ("positions", "bot_id",           "TEXT NOT NULL DEFAULT ''"),
+        ("positions", "shares_remaining", "REAL"),
+        ("positions", "current_sl_pct",   "REAL"),
+        ("positions", "current_sl_price", "REAL"),
+        ("positions", "tp1_hit",          "INTEGER NOT NULL DEFAULT 0"),
+        ("positions", "tp2_hit",          "INTEGER NOT NULL DEFAULT 0"),
+        ("positions", "tp3_hit",          "INTEGER NOT NULL DEFAULT 0"),
+        ("positions", "tp4_hit",          "INTEGER NOT NULL DEFAULT 0"),
+        ("positions", "highest_price",    "REAL"),
+        ("trades",    "bot_id",           "TEXT NOT NULL DEFAULT ''"),
+        ("trades",    "reason",           "TEXT NOT NULL DEFAULT 'signal'"),
     ]
     trade_cols = _table_columns(conn, "trades")
     col_cache: dict[str, set[str]] = {"positions": pos_cols, "trades": trade_cols}
@@ -316,16 +332,26 @@ def open_position(
     entry_price: float,
     shares: float,
     strategy: str,
+    stop_loss_pct: float = 0.05,
 ) -> int:
     """Insert a new open position.  Returns the new row id, or ``-1`` on failure."""
     try:
         with _connect() as conn:
             now = datetime.now(tz=timezone.utc).isoformat()
+            initial_sl_price: float = entry_price * (1.0 - stop_loss_pct)
             cursor = conn.execute(
                 "INSERT INTO positions"
-                " (bot_id, symbol, source, entry_price, shares, entry_date, strategy, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
-                (bot_id, symbol, source, entry_price, shares, now, strategy),
+                " (bot_id, symbol, source, entry_price, shares, shares_remaining,"
+                "  entry_date, strategy, status,"
+                "  current_sl_pct, current_sl_price,"
+                "  tp1_hit, tp2_hit, tp3_hit, tp4_hit, highest_price)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 0, 0, 0, 0, ?)",
+                (
+                    bot_id, symbol, source, entry_price, shares, shares,
+                    now, strategy,
+                    stop_loss_pct, initial_sl_price,
+                    entry_price,
+                ),
             )
             return cursor.lastrowid or -1
     except sqlite3.Error as exc:
@@ -336,23 +362,29 @@ def open_position(
 def close_position(
     position_id: int,
     exit_price: float,
+    shares_to_close: float | None = None,
     reason: str = "signal",
 ) -> dict[str, Any]:
     """
-    Mark a position as closed, record the trade, and return the trade dict.
+    Partially or fully close an open position, record the trade, and return the trade dict.
 
     Parameters
     ----------
     position_id:
         Primary key of the open position row.
     exit_price:
-        Price at which the position is closed.
+        Price at which shares are closed.
+    shares_to_close:
+        Shares to close.  ``None`` (or a value exceeding ``shares_remaining``)
+        closes all remaining shares.
     reason:
-        Exit reason — ``"signal"``, ``"stop_loss"``, or ``"take_profit"``.
+        Exit reason — ``"signal"``, ``"stop_loss"``, ``"tp1"`` – ``"tp4"``,
+        or ``"trailing_stop"``.
 
     Returns
     -------
-    dict with all trade fields, or ``{}`` if the position is not found.
+    dict with all trade fields (``shares`` = shares actually closed and
+    ``fully_closed`` bool), or ``{}`` if the position is not found.
     """
     try:
         with _connect() as conn:
@@ -368,11 +400,23 @@ def close_position(
                 return {}
 
             pos = dict(row)
-            exit_date = datetime.now(tz=timezone.utc).isoformat()
-            pnl: float = (exit_price - pos["entry_price"]) * pos["shares"]
-            pnl_pct: float = (
-                (exit_price - pos["entry_price"]) / pos["entry_price"] * 100.0
+            shares_remaining: float = pos.get("shares_remaining") or pos["shares"]
+            actual_close: float = (
+                shares_to_close if shares_to_close is not None else shares_remaining
             )
+            actual_close = min(actual_close, shares_remaining)
+            if actual_close <= 0:
+                logger.warning(
+                    "close_position(%d): shares_to_close=%.6f — nothing to close.",
+                    position_id,
+                    actual_close,
+                )
+                return {}
+
+            entry_price: float = pos["entry_price"]
+            exit_date = datetime.now(tz=timezone.utc).isoformat()
+            pnl: float = (exit_price - entry_price) * actual_close
+            pnl_pct: float = (exit_price - entry_price) / entry_price * 100.0
 
             conn.execute(
                 "INSERT INTO trades"
@@ -384,9 +428,9 @@ def close_position(
                     pos["symbol"],
                     pos["source"],
                     pos["strategy"],
-                    pos["entry_price"],
+                    entry_price,
                     exit_price,
-                    pos["shares"],
+                    actual_close,
                     pos["entry_date"],
                     exit_date,
                     pnl,
@@ -394,28 +438,94 @@ def close_position(
                     reason,
                 ),
             )
-            conn.execute(
-                "UPDATE positions SET status = 'closed' WHERE id = ?",
-                (position_id,),
-            )
+
+            new_remaining: float = shares_remaining - actual_close
+            fully_closed: bool = new_remaining <= 1e-9
+            if fully_closed:
+                conn.execute(
+                    "UPDATE positions SET status = 'closed', shares_remaining = 0 WHERE id = ?",
+                    (position_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE positions SET shares_remaining = ? WHERE id = ?",
+                    (new_remaining, position_id),
+                )
 
             return {
-                "bot_id": pos["bot_id"],
-                "symbol": pos["symbol"],
-                "source": pos["source"],
-                "strategy": pos["strategy"],
-                "entry_price": pos["entry_price"],
-                "exit_price": exit_price,
-                "shares": pos["shares"],
-                "entry_date": pos["entry_date"],
-                "exit_date": exit_date,
-                "pnl": pnl,
-                "pnl_pct": pnl_pct,
-                "reason": reason,
+                "bot_id":       pos["bot_id"],
+                "symbol":       pos["symbol"],
+                "source":       pos["source"],
+                "strategy":     pos["strategy"],
+                "entry_price":  entry_price,
+                "exit_price":   exit_price,
+                "shares":       actual_close,
+                "entry_date":   pos["entry_date"],
+                "exit_date":    exit_date,
+                "pnl":          pnl,
+                "pnl_pct":      pnl_pct,
+                "reason":       reason,
+                "fully_closed": fully_closed,
             }
     except sqlite3.Error as exc:
         logger.error("close_position(%d) failed: %s", position_id, exc)
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Position state helpers
+# ---------------------------------------------------------------------------
+
+
+def update_position_sl(
+    position_id: int,
+    new_sl_price: float,
+    new_sl_pct: float,
+) -> None:
+    """Update the dynamic stop-loss price and percentage for an open position."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE positions"
+                " SET current_sl_price = ?, current_sl_pct = ?"
+                " WHERE id = ? AND status = 'open'",
+                (new_sl_price, new_sl_pct, position_id),
+            )
+    except sqlite3.Error as exc:
+        logger.error("update_position_sl(%d) failed: %s", position_id, exc)
+
+
+def update_position_tp_hit(position_id: int, tp_level: int) -> None:
+    """Mark a take-profit level (1–4) as hit for the given open position."""
+    if tp_level not in (1, 2, 3, 4):
+        logger.warning("update_position_tp_hit: invalid tp_level=%d", tp_level)
+        return
+    col = f"tp{tp_level}_hit"
+    try:
+        with _connect() as conn:
+            conn.execute(
+                f"UPDATE positions SET {col} = 1 WHERE id = ? AND status = 'open'",
+                (position_id,),
+            )
+    except sqlite3.Error as exc:
+        logger.error(
+            "update_position_tp_hit(%d, tp%d) failed: %s", position_id, tp_level, exc
+        )
+
+
+def update_highest_price(position_id: int, price: float) -> None:
+    """Update the highest-seen price for trailing-stop tracking (only if higher)."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE positions"
+                " SET highest_price = ?"
+                " WHERE id = ? AND status = 'open'"
+                "   AND (highest_price IS NULL OR highest_price < ?)",
+                (price, position_id, price),
+            )
+    except sqlite3.Error as exc:
+        logger.error("update_highest_price(%d) failed: %s", position_id, exc)
 
 
 # ---------------------------------------------------------------------------

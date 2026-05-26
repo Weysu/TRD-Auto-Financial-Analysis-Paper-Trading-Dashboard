@@ -12,6 +12,7 @@ operates exclusively on that bot's rows in the database.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from typing import Any
@@ -76,7 +77,8 @@ class Portfolio:
         """
         positions = db.get_open_positions(self._cfg.bot_id)
         mtm: float = sum(
-            current_prices.get(p["symbol"], p["entry_price"]) * p["shares"]
+            current_prices.get(p["symbol"], p["entry_price"])
+            * (p.get("shares_remaining") or p["shares"])
             for p in positions
         )
         return self.cash + mtm
@@ -107,60 +109,168 @@ class Portfolio:
             "num_closed_trades": len(db.get_trade_history(self._cfg.bot_id)),
         }
 
-    def check_stop_loss_take_profit(
+    def check_exits(
         self, current_prices: dict[str, float]
     ) -> list[dict[str, Any]]:
         """
-        Check every open position against the bot's stop-loss and take-profit levels.
+        Check every open position for stop-loss, trailing-stop, and multi-level
+        take-profit exits.
+
+        Side effects
+        ------------
+        * Updates ``highest_price`` in the database for any new high seen.
+        * Marks TP levels as hit (``tpN_hit``) and moves the dynamic SL
+          when a take-profit threshold is crossed.
+
+        The actual partial/full close (trade record + cash update) is
+        performed later by the caller via :meth:`sell`.
 
         Parameters
         ----------
         current_prices:
-            Mapping of ``symbol → current price``.  Positions whose symbol is
-            absent from the dict are skipped (price unknown).
+            Mapping of ``symbol → current price``.  Positions whose symbol
+            is absent are skipped.
 
         Returns
         -------
-        list[dict] — one entry per triggered position, with keys:
-            ``position_id`` (int), ``symbol`` (str),
-            ``reason`` (``"stop_loss"`` | ``"take_profit"``),
-            ``current_price`` (float).
+        list[dict] — one entry per triggered exit (a position may contribute
+        multiple entries when several TP levels fire in the same cycle).
+        Keys: ``position_id`` (int), ``symbol`` (str),
+        ``shares_to_close`` (float), ``reason`` (str),
+        ``current_price`` (float), ``pnl`` (float), ``pnl_pct`` (float).
         """
-        triggered: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         positions = db.get_open_positions(self._cfg.bot_id)
+        tp_levels = self._cfg.take_profit_levels
 
         for pos in positions:
             symbol: str = pos["symbol"]
             current_price = current_prices.get(symbol)
-            if current_price is None or current_price != current_price:  # None or NaN
+            if current_price is None or math.isnan(current_price):
                 continue
 
             entry: float = pos["entry_price"]
             if entry <= 0:
                 continue
 
-            change_pct: float = (current_price - entry) / entry
+            pos_id: int = pos["id"]
+            shares_remaining: float = pos.get("shares_remaining") or pos["shares"]
 
-            if change_pct <= -self._cfg.stop_loss_pct:
-                triggered.append(
+            # ── 1. Update highest price ───────────────────────────────────
+            highest: float = pos.get("highest_price") or entry
+            if current_price > highest:
+                db.update_highest_price(pos_id, current_price)
+                highest = current_price
+
+            current_sl_price: float = (
+                pos.get("current_sl_price") or entry * (1.0 - self._cfg.stop_loss_pct)
+            )
+
+            # ── 2. Trailing stop (last TP with target_pct=="trailing_5pct") ──
+            # Only fires when all preceding fixed TPs have been hit.
+            trailing_triggered = False
+            if tp_levels and tp_levels[-1].get("target_pct") == "trailing_5pct":
+                n_fixed = len(tp_levels) - 1
+                all_prev_hit: bool = all(
+                    pos.get(f"tp{i + 1}_hit", 0) for i in range(n_fixed)
+                )
+                if all_prev_hit:
+                    trailing_trigger: float = highest * 0.95
+                    if current_price <= trailing_trigger:
+                        trailing_triggered = True
+                        pnl = (current_price - entry) * shares_remaining
+                        pnl_pct = (current_price - entry) / entry * 100.0
+                        results.append(
+                            {
+                                "position_id":   pos_id,
+                                "symbol":        symbol,
+                                "shares_to_close": shares_remaining,
+                                "reason":        "trailing_stop",
+                                "current_price": current_price,
+                                "pnl":           pnl,
+                                "pnl_pct":       pnl_pct,
+                            }
+                        )
+
+            if trailing_triggered:
+                continue
+
+            # ── 3. Stop loss ──────────────────────────────────────────────
+            if current_price <= current_sl_price:
+                pnl = (current_price - entry) * shares_remaining
+                pnl_pct = (current_price - entry) / entry * 100.0
+                results.append(
                     {
-                        "position_id": pos["id"],
-                        "symbol": symbol,
-                        "reason": "stop_loss",
+                        "position_id":   pos_id,
+                        "symbol":        symbol,
+                        "shares_to_close": shares_remaining,
+                        "reason":        "stop_loss",
                         "current_price": current_price,
+                        "pnl":           pnl,
+                        "pnl_pct":       pnl_pct,
                     }
                 )
-            elif change_pct >= self._cfg.take_profit_pct:
-                triggered.append(
+                continue
+
+            # ── 4. Take-profit levels ─────────────────────────────────────
+            # Exclude trailing placeholder from fixed-TP checks.
+            n_fixed_tps: int = (
+                len(tp_levels) - 1
+                if tp_levels and tp_levels[-1].get("target_pct") == "trailing_5pct"
+                else len(tp_levels)
+            )
+            running_remaining = shares_remaining
+
+            for i, tp in enumerate(tp_levels[:n_fixed_tps]):
+                tp_col = f"tp{i + 1}_hit"
+                if pos.get(tp_col, 0):
+                    continue  # already hit
+
+                target_pct = tp.get("target_pct", 0.0)
+                if not isinstance(target_pct, (int, float)):
+                    continue  # skip non-numeric (e.g., "trailing_5pct")
+
+                tp_price: float = entry * (1.0 + float(target_pct))
+                if current_price < tp_price:
+                    break  # levels are ordered ascending; no need to check further
+
+                close_fraction: float = float(tp.get("close_fraction", 1.0))
+                shares_closed: float = running_remaining * close_fraction
+                pnl = (current_price - entry) * shares_closed
+                pnl_pct = (current_price - entry) / entry * 100.0
+                reason = f"tp{i + 1}"
+
+                # Persist TP hit + SL move before executor calls sell.
+                db.update_position_tp_hit(pos_id, i + 1)
+
+                move_sl_to = tp.get("move_sl_to")
+                if move_sl_to is not None:
+                    if move_sl_to == 0.0:
+                        db.update_position_sl(pos_id, entry, 0.0)
+                    elif isinstance(move_sl_to, str) and move_sl_to.startswith("tp"):
+                        ref_idx = int(move_sl_to[2:]) - 1
+                        if ref_idx < len(tp_levels):
+                            ref_target = tp_levels[ref_idx].get("target_pct", 0.0)
+                            if isinstance(ref_target, (int, float)):
+                                new_sl = entry * (1.0 + float(ref_target))
+                                db.update_position_sl(pos_id, new_sl, float(ref_target))
+
+                results.append(
                     {
-                        "position_id": pos["id"],
-                        "symbol": symbol,
-                        "reason": "take_profit",
+                        "position_id":   pos_id,
+                        "symbol":        symbol,
+                        "shares_to_close": shares_closed,
+                        "reason":        reason,
                         "current_price": current_price,
+                        "pnl":           pnl,
+                        "pnl_pct":       pnl_pct,
                     }
                 )
+                running_remaining -= shares_closed
+                if running_remaining <= 1e-9:
+                    break
 
-        return triggered
+        return results
 
     # ------------------------------------------------------------------
     # Mutations
@@ -192,7 +302,8 @@ class Portfolio:
             return False
 
         position_id = db.open_position(
-            self._cfg.bot_id, symbol, source, price, shares, strategy
+            self._cfg.bot_id, symbol, source, price, shares, strategy,
+            stop_loss_pct=self._cfg.stop_loss_pct,
         )
         if position_id == -1:
             return False
@@ -213,21 +324,25 @@ class Portfolio:
         position_id: int,
         symbol: str,
         price: float,
+        shares_to_close: float | None = None,
         reason: str = "signal",
     ) -> dict[str, Any]:
         """
-        Close an open position at ``price`` and credit the proceeds to cash.
+        Partially or fully close an open position and credit the proceeds to cash.
 
         Parameters
         ----------
+        shares_to_close:
+            Shares to close.  ``None`` closes all remaining shares.
         reason:
-            Exit reason — ``"signal"``, ``"stop_loss"``, or ``"take_profit"``.
+            Exit reason — ``"signal"``, ``"stop_loss"``, ``"tp1"``–``"tp4"``,
+            or ``"trailing_stop"``.
 
         Returns
         -------
         The closed trade dict, or ``{}`` if the position is not found.
         """
-        trade = db.close_position(position_id, price, reason)
+        trade = db.close_position(position_id, price, shares_to_close=shares_to_close, reason=reason)
         if not trade:
             return {}
 

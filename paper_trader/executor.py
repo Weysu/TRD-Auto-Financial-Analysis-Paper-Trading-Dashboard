@@ -202,14 +202,15 @@ def check_and_execute(
     # ------------------------------------------------------------------
     # 2. Stop-loss / take-profit exits (before scanning for new signals)
     # ------------------------------------------------------------------
-    sl_tp_exits = portfolio.check_stop_loss_take_profit(position_prices)
-    for exit_info in sl_tp_exits:
+    exits = portfolio.check_exits(position_prices)
+    for exit_info in exits:
         pos_id: int = exit_info["position_id"]
         symbol: str = exit_info["symbol"]
         exit_price: float = exit_info["current_price"]
         reason: str = exit_info["reason"]
+        shares_to_close: float | None = exit_info.get("shares_to_close")
 
-        trade = portfolio.sell(pos_id, symbol, exit_price, reason=reason)
+        trade = portfolio.sell(pos_id, symbol, exit_price, shares_to_close=shares_to_close, reason=reason)
         if trade:
             actions.append(
                 {
@@ -223,8 +224,10 @@ def check_and_execute(
                     **trade,
                 }
             )
-            # Remove from open_by_symbol so the asset is skipped below.
-            open_by_symbol.pop(symbol, None)
+            # Only remove from open_by_symbol for full exits; partial TP closes
+            # keep the position open and open_by_symbol_fresh handles it correctly.
+            if trade.get("fully_closed", True):
+                open_by_symbol.pop(symbol, None)
 
     # Refresh open positions after SL/TP exits.
     open_positions_fresh = portfolio.get_open_positions()

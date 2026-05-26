@@ -291,7 +291,16 @@ def run_simulation(
                 if current_price <= pos.entry_price * (1.0 - bot_cfg.stop_loss_pct):
                     _close(label, pos, current_price, current_date, "stop_loss")
                     continue
-                if current_price >= pos.entry_price * (1.0 + bot_cfg.take_profit_pct):
+                # Use the last fixed numeric TP level as the simulation take-profit target
+                _sim_tp: float = next(
+                    (
+                        float(tp["target_pct"])
+                        for tp in reversed(bot_cfg.take_profit_levels)
+                        if isinstance(tp.get("target_pct"), (int, float))
+                    ),
+                    0.20,
+                )
+                if current_price >= pos.entry_price * (1.0 + _sim_tp):
                     _close(label, pos, current_price, current_date, "take_profit")
                     continue
                 # Sell signal

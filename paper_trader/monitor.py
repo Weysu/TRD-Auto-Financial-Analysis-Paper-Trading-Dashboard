@@ -99,26 +99,50 @@ def _summary_df(all_portfolios: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _open_positions_df(bot_id: str, cfg: BotConfig) -> pd.DataFrame:
-    """Return open positions for ``bot_id`` with SL/TP price columns."""
+def _open_positions_df(
+    bot_id: str,
+    cfg: BotConfig,
+    current_prices: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Return open positions with dynamic SL, per-level TP hit status, and MTM PnL."""
     positions = get_open_positions(bot_id)
     if not positions:
         return pd.DataFrame()
 
+    if current_prices is None:
+        current_prices = {}
+
+    fixed_tps = [
+        tp for tp in cfg.take_profit_levels
+        if isinstance(tp.get("target_pct"), (int, float))
+    ]
+
     rows = []
     for pos in positions:
         entry: float = pos["entry_price"]
-        sl_price: float = entry * (1 - cfg.stop_loss_pct)
-        tp_price: float = entry * (1 + cfg.take_profit_pct)
+        shares_total: float = pos["shares"]
+        shares_remaining: float = pos.get("shares_remaining") or shares_total
+        current_price: float = current_prices.get(pos["symbol"], entry)
+        unrealized_pnl: float = (current_price - entry) * shares_remaining
+        current_sl: float = (
+            pos.get("current_sl_price") or entry * (1.0 - cfg.stop_loss_pct)
+        )
+        tp_hit_str = "  ".join(
+            f"TP{i + 1} {'\u2713' if pos.get(f'tp{i + 1}_hit', 0) else '\u2717'}"
+            for i in range(min(len(fixed_tps), 4))
+        )
         rows.append(
             {
-                "Symbol": pos["symbol"],
-                "Strategy": pos["strategy"],
-                "Entry Price": entry,
-                "Shares": pos["shares"],
-                "Stop Loss ($)": sl_price,
-                "Take Profit ($)": tp_price,
-                "Entry Date": pos["entry_date"],
+                "Symbol":           pos["symbol"],
+                "Strategy":         pos["strategy"],
+                "Entry ($)":        entry,
+                "Current ($)":      current_price,
+                "Shares Total":     shares_total,
+                "Shares Remaining": shares_remaining,
+                "Unrealized PnL":   unrealized_pnl,
+                "SL Price ($)":     current_sl,
+                "TP Levels":        tp_hit_str,
+                "Entry Date":       pos["entry_date"],
             }
         )
     return pd.DataFrame(rows)
@@ -271,7 +295,8 @@ def paper_trading_page() -> None:
     with st.spinner("Fetching live prices…"):
         live_prices = _fetch_current_prices(open_positions) if open_positions else {}
     mtm: float = sum(
-        live_prices.get(p["symbol"], p["entry_price"]) * p["shares"]
+        live_prices.get(p["symbol"], p["entry_price"])
+        * (p.get("shares_remaining") or p["shares"])
         for p in open_positions
     )
     equity: float = current_cap + mtm
@@ -302,24 +327,26 @@ def paper_trading_page() -> None:
         f"Strategies: **{', '.join(selected_cfg.strategy_filter)}**  |  "
         f"Confluence threshold: **{selected_cfg.min_confluence}**  |  "
         f"SL: **{selected_cfg.stop_loss_pct*100:.0f}%**  |  "
-        f"TP: **{selected_cfg.take_profit_pct*100:.0f}%**"
+        f"TP levels: **{len(selected_cfg.take_profit_levels)}**"
     )
 
     st.divider()
 
     # Open positions
     st.caption("Open Positions")
-    open_df = _open_positions_df(selected_bot_id, selected_cfg)
+    open_df = _open_positions_df(selected_bot_id, selected_cfg, current_prices=live_prices)
     if open_df.empty:
         st.info("No open positions.")
     else:
         st.dataframe(
             open_df.style.format(
                 {
-                    "Entry Price": "{:.4f}",
-                    "Shares": "{:.6f}",
-                    "Stop Loss ($)": "{:.4f}",
-                    "Take Profit ($)": "{:.4f}",
+                    "Entry ($)":        "{:.4f}",
+                    "Current ($)":      "{:.4f}",
+                    "Shares Total":     "{:.6f}",
+                    "Shares Remaining": "{:.6f}",
+                    "Unrealized PnL":   "{:+.2f}",
+                    "SL Price ($)":     "{:.4f}",
                 }
             ),
             use_container_width=True,
