@@ -55,6 +55,8 @@ from ui.sidebar import render_sidebar
 # (mtime-based check), making repeated renders cheap.
 _monitor_mtime: float = 0.0
 
+from backtest_bot import backtest_bot_page  # noqa: E402
+
 
 def _paper_trading_page() -> None:
     """Thin shim: lazily import + conditionally reload paper_trader.monitor."""
@@ -240,6 +242,7 @@ pg = st.navigation(
         st.Page(dashboard, title="Dashboard"),
         st.Page("backtest.py", title="Backtest"),
         st.Page(_paper_trading_page, title="Paper Trading"),
+        st.Page(backtest_bot_page, title="Bot Simulation"),
     ]
 )
 pg.run()
