@@ -38,45 +38,112 @@ Planned extensions (do not add logic yet)
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Equity assets  (yfinance compatible tickers)
+# Equity assets organised by sector  (yfinance compatible tickers)
+# Each leaf entry carries the full connector config so it can be used
+# directly in ASSETS_BY_SECTOR without further transformation.
 # ---------------------------------------------------------------------------
-STOCK_ASSETS: dict[str, str] = {
-    "Apple (AAPL)": "AAPL",
-    "Microsoft (MSFT)": "MSFT",
-    "NVIDIA (NVDA)": "NVDA",
-    "Tesla (TSLA)": "TSLA",
-    "Amazon (AMZN)": "AMZN",
-    "Alphabet (GOOGL)": "GOOGL",
-    "Meta (META)": "META",
-    "S&P 500 ETF (SPY)": "SPY",
+STOCK_ASSETS_BY_SECTOR: dict[str, dict[str, dict]] = {
+    "Technology": {
+        "Apple (AAPL)":       {"source": "yahoo", "id": "AAPL"},
+        "Microsoft (MSFT)":   {"source": "yahoo", "id": "MSFT"},
+        "Nvidia (NVDA)":      {"source": "yahoo", "id": "NVDA"},
+        "Alphabet (GOOGL)":   {"source": "yahoo", "id": "GOOGL"},
+        "Meta (META)":        {"source": "yahoo", "id": "META"},
+        "AMD (AMD)":          {"source": "yahoo", "id": "AMD"},
+        "Salesforce (CRM)":   {"source": "yahoo", "id": "CRM"},
+        "Adobe (ADBE)":       {"source": "yahoo", "id": "ADBE"},
+    },
+    "Healthcare": {
+        "Johnson & Johnson (JNJ)": {"source": "yahoo", "id": "JNJ"},
+        "UnitedHealth (UNH)":      {"source": "yahoo", "id": "UNH"},
+        "Pfizer (PFE)":            {"source": "yahoo", "id": "PFE"},
+        "AbbVie (ABBV)":           {"source": "yahoo", "id": "ABBV"},
+        "Merck (MRK)":             {"source": "yahoo", "id": "MRK"},
+        "Thermo Fisher (TMO)":     {"source": "yahoo", "id": "TMO"},
+        "Danaher (DHR)":           {"source": "yahoo", "id": "DHR"},
+        "Eli Lilly (LLY)":         {"source": "yahoo", "id": "LLY"},
+    },
+    "Finance": {
+        "JPMorgan (JPM)":          {"source": "yahoo", "id": "JPM"},
+        "Bank of America (BAC)":   {"source": "yahoo", "id": "BAC"},
+        "Goldman Sachs (GS)":      {"source": "yahoo", "id": "GS"},
+        "Morgan Stanley (MS)":     {"source": "yahoo", "id": "MS"},
+        "BlackRock (BLK)":         {"source": "yahoo", "id": "BLK"},
+        "Visa (V)":                {"source": "yahoo", "id": "V"},
+        "Mastercard (MA)":         {"source": "yahoo", "id": "MA"},
+        "American Express (AXP)":  {"source": "yahoo", "id": "AXP"},
+    },
+    "Energy": {
+        "ExxonMobil (XOM)":         {"source": "yahoo", "id": "XOM"},
+        "Chevron (CVX)":            {"source": "yahoo", "id": "CVX"},
+        "ConocoPhillips (COP)":     {"source": "yahoo", "id": "COP"},
+        "SLB (SLB)":                {"source": "yahoo", "id": "SLB"},
+        "EOG Resources (EOG)":      {"source": "yahoo", "id": "EOG"},
+        "Phillips 66 (PSX)":        {"source": "yahoo", "id": "PSX"},
+        "Marathon Petroleum (MPC)": {"source": "yahoo", "id": "MPC"},
+        "Occidental (OXY)":         {"source": "yahoo", "id": "OXY"},
+    },
+    "Consumer": {
+        "Amazon (AMZN)":    {"source": "yahoo", "id": "AMZN"},
+        "Tesla (TSLA)":     {"source": "yahoo", "id": "TSLA"},
+        "Home Depot (HD)":  {"source": "yahoo", "id": "HD"},
+        "McDonald's (MCD)": {"source": "yahoo", "id": "MCD"},
+        "Nike (NKE)":       {"source": "yahoo", "id": "NKE"},
+        "Starbucks (SBUX)": {"source": "yahoo", "id": "SBUX"},
+        "Target (TGT)":     {"source": "yahoo", "id": "TGT"},
+        "Lowe's (LOW)":     {"source": "yahoo", "id": "LOW"},
+    },
+    "Industrials": {
+        "Caterpillar (CAT)":      {"source": "yahoo", "id": "CAT"},
+        "Boeing (BA)":            {"source": "yahoo", "id": "BA"},
+        "Honeywell (HON)":        {"source": "yahoo", "id": "HON"},
+        "UPS (UPS)":              {"source": "yahoo", "id": "UPS"},
+        "Raytheon (RTX)":         {"source": "yahoo", "id": "RTX"},
+        "John Deere (DE)":        {"source": "yahoo", "id": "DE"},
+        "Lockheed Martin (LMT)":  {"source": "yahoo", "id": "LMT"},
+        "GE Aerospace (GE)":      {"source": "yahoo", "id": "GE"},
+    },
+}
+
+# Flat view for backward compatibility — consumed by ALL_ASSETS and the bots.
+STOCK_ASSETS: dict[str, dict] = {
+    label: cfg
+    for sector in STOCK_ASSETS_BY_SECTOR.values()
+    for label, cfg in sector.items()
 }
 
 # ---------------------------------------------------------------------------
 # Crypto assets  (CoinGecko coin IDs)
 # ---------------------------------------------------------------------------
-CRYPTO_ASSETS: dict[str, str] = {
-    "Bitcoin (BTC)": "bitcoin",
-    "Ethereum (ETH)": "ethereum",
-    "Solana (SOL)": "solana",
-    "BNB": "binancecoin",
-    "XRP": "ripple",
+CRYPTO_ASSETS: dict[str, dict] = {
+    "Bitcoin (BTC)":    {"source": "coingecko", "id": "bitcoin"},
+    "Ethereum (ETH)":   {"source": "coingecko", "id": "ethereum"},
+    "Solana (SOL)":     {"source": "coingecko", "id": "solana"},
+    "BNB (BNB)":        {"source": "coingecko", "id": "binancecoin"},
+    "XRP (XRP)":        {"source": "coingecko", "id": "ripple"},
+    "Cardano (ADA)":    {"source": "coingecko", "id": "cardano"},
+    "Avalanche (AVAX)": {"source": "coingecko", "id": "avalanche-2"},
+    "Chainlink (LINK)": {"source": "coingecko", "id": "chainlink"},
 }
 
 # ---------------------------------------------------------------------------
 # Unified asset registry consumed by the UI and connector factory.
-# Each entry stores:
-#   "source"  -> connector key  ("yahoo" | "coingecko")
-#   "id"      -> ticker or coin ID passed to the connector
+# Both STOCK_ASSETS and CRYPTO_ASSETS already carry the full connector config,
+# so ALL_ASSETS is a simple merge.
 # ---------------------------------------------------------------------------
 ALL_ASSETS: dict[str, dict[str, Any]] = {
-    **{
-        label: {"source": "yahoo", "id": ticker}
-        for label, ticker in STOCK_ASSETS.items()
-    },
-    **{
-        label: {"source": "coingecko", "id": coin_id}
-        for label, coin_id in CRYPTO_ASSETS.items()
-    },
+    **STOCK_ASSETS,
+    **CRYPTO_ASSETS,
+}
+
+# ---------------------------------------------------------------------------
+# Sector helpers — used by the sidebar sector filter.
+# ---------------------------------------------------------------------------
+STOCK_SECTORS: list[str] = list(STOCK_ASSETS_BY_SECTOR.keys())
+
+ASSETS_BY_SECTOR: dict[str, dict[str, dict]] = {
+    **STOCK_ASSETS_BY_SECTOR,
+    "Crypto": CRYPTO_ASSETS,
 }
 
 # ---------------------------------------------------------------------------

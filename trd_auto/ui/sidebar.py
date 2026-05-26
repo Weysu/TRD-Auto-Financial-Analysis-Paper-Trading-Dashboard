@@ -29,6 +29,8 @@ import streamlit as st
 
 from config.assets import (
     ALL_ASSETS,
+    ASSETS_BY_SECTOR,
+    STOCK_SECTORS,
     TIME_RANGES,
     DEFAULT_ASSET_LABEL,
     DEFAULT_TIME_RANGE_LABEL,
@@ -68,11 +70,6 @@ def render_sidebar() -> tuple[str, dict, str]:
     asset_labels: list[str] = list(ALL_ASSETS.keys())
     time_range_labels: list[str] = [tr["label"] for tr in TIME_RANGES]
 
-    default_asset_idx: int = (
-        asset_labels.index(DEFAULT_ASSET_LABEL)
-        if DEFAULT_ASSET_LABEL in asset_labels
-        else 0
-    )
     default_tr_idx: int = (
         time_range_labels.index(DEFAULT_TIME_RANGE_LABEL)
         if DEFAULT_TIME_RANGE_LABEL in time_range_labels
@@ -84,10 +81,29 @@ def render_sidebar() -> tuple[str, dict, str]:
         st.caption("Paper trading & analysis platform")
         st.divider()
 
+        st.caption("Sector")
+        sector_options: list[str] = ["All"] + STOCK_SECTORS + ["Crypto"]
+        sector: str = st.selectbox(
+            label="Sector",
+            options=sector_options,
+            label_visibility="collapsed",
+        )
+
+        if sector == "All":
+            filtered_labels: list[str] = asset_labels
+        else:
+            filtered_labels = list(ASSETS_BY_SECTOR[sector].keys())
+
+        default_asset_idx: int = (
+            filtered_labels.index(DEFAULT_ASSET_LABEL)
+            if DEFAULT_ASSET_LABEL in filtered_labels
+            else 0
+        )
+
         st.caption("Asset")
         asset_label: str = st.selectbox(
             label="Asset",
-            options=asset_labels,
+            options=filtered_labels,
             index=default_asset_idx,
             label_visibility="collapsed",
         )

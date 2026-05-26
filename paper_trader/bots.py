@@ -59,16 +59,85 @@ class BotConfig:
     take_profit_pct: float
     """Fraction above entry price that triggers a take-profit exit (e.g. 0.15 = 15 %)."""
 
+    cycle_hours: int
+    """How often (in hours) the engine should run this bot (e.g. 2, 4, 6, 8)."""
+
+    use_sentiment: bool
+    """Whether to fetch and integrate news sentiment into the confluence score."""
+
+    asset_universe: str
+    """Asset subset to scan: ``"crypto"``, ``"stocks"``, or ``"all"``."""
+
+    use_trend_filter: bool
+    """If True, only allow buy signals when ``is_uptrend_sma200`` returns True."""
+
 
 # ---------------------------------------------------------------------------
 # Bot registry
 # ---------------------------------------------------------------------------
 
 BOTS: dict[str, BotConfig] = {
-    "confluence": BotConfig(
-        bot_id="confluence",
-        name="Confluence",
-        description="Multi-signal conservative — waits for 3+ aligned signals",
+
+    # ── Crypto ─────────────────────────────────────────────────────────────────────
+    "crypto_trend": BotConfig(
+        bot_id="crypto_trend",
+        name="Crypto Trend",
+        description="Rides directional momentum on major crypto assets.",
+        initial_capital=10_000.0,
+        max_position_pct=0.20,
+        min_confluence=2,
+        sell_threshold=0,
+        strategy_filter=("ma", "macd"),
+        timeframe="1Y",
+        stop_loss_pct=0.08,
+        take_profit_pct=0.20,
+        cycle_hours=4,
+        use_sentiment=False,
+        use_trend_filter=False,
+        asset_universe="crypto",
+    ),
+
+    "crypto_reversion": BotConfig(
+        bot_id="crypto_reversion",
+        name="Crypto Mean Reversion",
+        description="Buys crypto oversold conditions confirmed by Bollinger Bands.",
+        initial_capital=10_000.0,
+        max_position_pct=0.15,
+        min_confluence=2,
+        sell_threshold=0,
+        strategy_filter=("rsi", "bb"),
+        timeframe="3M",
+        stop_loss_pct=0.05,
+        take_profit_pct=0.10,
+        cycle_hours=4,
+        use_sentiment=True,
+        use_trend_filter=False,
+        asset_universe="crypto",
+    ),
+
+    # ── Equities ────────────────────────────────────────────────────────────
+    "equity_trend": BotConfig(
+        bot_id="equity_trend",
+        name="Equity Trend",
+        description="Follows long-duration trends on stocks above their SMA200.",
+        initial_capital=10_000.0,
+        max_position_pct=0.15,
+        min_confluence=2,
+        sell_threshold=0,
+        strategy_filter=("ma", "macd"),
+        timeframe="1Y",
+        stop_loss_pct=0.06,
+        take_profit_pct=0.15,
+        cycle_hours=6,
+        use_sentiment=False,
+        use_trend_filter=True,
+        asset_universe="stocks",
+    ),
+
+    "equity_quality": BotConfig(
+        bot_id="equity_quality",
+        name="Equity Quality",
+        description="High-conviction stock setups — 3 signals required, trend confirmed.",
         initial_capital=10_000.0,
         max_position_pct=0.20,
         min_confluence=3,
@@ -76,58 +145,57 @@ BOTS: dict[str, BotConfig] = {
         strategy_filter=("ma", "rsi", "bb", "macd"),
         timeframe="1Y",
         stop_loss_pct=0.07,
-        take_profit_pct=0.15,
+        take_profit_pct=0.18,
+        cycle_hours=8,
+        use_sentiment=True,
+        use_trend_filter=True,
+        asset_universe="stocks",
     ),
-    "momentum": BotConfig(
-        bot_id="momentum",
-        name="Momentum",
-        description="Rides strong trends — MACD + sentiment only",
+
+    # ── Multi-asset ─────────────────────────────────────────────────────────
+    "scanner": BotConfig(
+        bot_id="scanner",
+        name="Multi-Asset Scanner",
+        description="Scans the full universe — only acts on maximum confluence setups.",
         initial_capital=10_000.0,
-        max_position_pct=0.25,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("macd",),
-        timeframe="3M",
+        max_position_pct=0.10,
+        min_confluence=4,
+        sell_threshold=2,
+        strategy_filter=("ma", "rsi", "bb", "macd"),
+        timeframe="1Y",
         stop_loss_pct=0.05,
         take_profit_pct=0.12,
+        cycle_hours=6,
+        use_sentiment=True,
+        use_trend_filter=False,
+        asset_universe="all",
     ),
-    "mean_reversion": BotConfig(
-        bot_id="mean_reversion",
-        name="Mean Reversion",
-        description="Buys dips — RSI oversold + BB lower touch",
-        initial_capital=10_000.0,
-        max_position_pct=0.20,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("rsi", "bb"),
-        timeframe="3M",
-        stop_loss_pct=0.06,
-        take_profit_pct=0.10,
-    ),
-    "trend": BotConfig(
-        bot_id="trend",
-        name="Trend Following",
-        description="Long term trend — MA Crossover on weekly data",
-        initial_capital=10_000.0,
-        max_position_pct=0.30,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("ma",),
-        timeframe="1Y",
-        stop_loss_pct=0.08,
-        take_profit_pct=0.20,
-    ),
-    "scalper": BotConfig(
-        bot_id="scalper",
-        name="Scalper",
-        description="Aggressive short-term — fast signals, strict risk management",
+
+    "breakout": BotConfig(
+        bot_id="breakout",
+        name="Breakout Hunter",
+        description="Detects Bollinger Band breakouts confirmed by MACD on all assets.",
         initial_capital=10_000.0,
         max_position_pct=0.10,
         min_confluence=2,
         sell_threshold=0,
-        strategy_filter=("macd", "rsi"),
-        timeframe="1M",
-        stop_loss_pct=0.03,
-        take_profit_pct=0.06,
+        strategy_filter=("bb", "macd"),
+        timeframe="3M",
+        stop_loss_pct=0.04,
+        take_profit_pct=0.08,
+        cycle_hours=2,
+        use_sentiment=False,
+        use_trend_filter=False,
+        asset_universe="all",
     ),
 }
+
+
+def get_assets_for_bot(bot: BotConfig) -> dict[str, dict]:
+    """Return the asset subset this bot should scan."""
+    from trd_auto.config.assets import STOCK_ASSETS, CRYPTO_ASSETS, ALL_ASSETS  # noqa: PLC0415
+    if bot.asset_universe == "crypto":
+        return CRYPTO_ASSETS
+    if bot.asset_universe == "stocks":
+        return STOCK_ASSETS
+    return ALL_ASSETS

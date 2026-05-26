@@ -37,6 +37,11 @@ INDICATOR_TOOLTIPS: dict[str, str] = {
         "Each headline is scored from −100 (very negative) to +100 (very positive) "
         "by Gemini Flash. The average is mapped to +1 / 0 / −1 and added to the confluence score."
     ),
+    "SMA200 Filter": (
+        "Trend regime filter — only allows buy signals when the last closing price "
+        "is above the 200-period simple moving average. "
+        "Prevents buying into assets in a structural downtrend."
+    ),
 }
 
 METRIC_TOOLTIPS: dict[str, str] = {
@@ -73,24 +78,28 @@ METRIC_TOOLTIPS: dict[str, str] = {
 }
 
 BOT_TOOLTIPS: dict[str, str] = {
-    "confluence": (
-        "Requires at least 3 out of 4 strategies to agree before entering a position. "
-        "Most selective bot — lowest trade frequency, highest signal quality."
+    "crypto_trend": (
+        "Rides directional momentum on major crypto assets using MA crossover and MACD. "
+        "Long timeframe, wide SL/TP to accommodate crypto volatility. Cycle: 4h."
     ),
-    "momentum": (
-        "Trades purely on MACD crossover signals. "
-        "Captures directional momentum on a 3-month window. High position sizing."
+    "crypto_reversion": (
+        "Identifies oversold crypto conditions via RSI + Bollinger Bands. "
+        "Sentiment-filtered — negative news blocks entry. Cycle: 4h."
     ),
-    "mean_reversion": (
-        "Combines RSI oversold and Bollinger Band breakout to identify "
-        "assets that have fallen sharply and may revert to their mean."
+    "equity_trend": (
+        "Follows long-duration stock trends confirmed by SMA200. "
+        "Only buys assets in a structural uptrend. Cycle: 6h."
     ),
-    "trend": (
-        "Single moving average crossover on a 1-year window. "
-        "Designed to ride long-duration trends. Largest position size of all bots."
+    "equity_quality": (
+        "High-conviction equity setups: 3 of 4 strategies aligned + SMA200 uptrend + sentiment check. "
+        "Low trade frequency, higher quality. Cycle: 8h."
     ),
-    "scalper": (
-        "MACD + RSI on a 1-month window with tight SL/TP. "
-        "Highest trade frequency, smallest position size."
+    "scanner": (
+        "Scans the full asset universe every 6h. "
+        "Requires all 4 strategies aligned + positive sentiment. Maximum selectivity."
+    ),
+    "breakout": (
+        "Detects Bollinger Band breakouts confirmed by MACD momentum across all assets. "
+        "Tightest SL/TP. Most frequent cycle at 2h."
     ),
 }

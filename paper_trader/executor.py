@@ -40,7 +40,7 @@ for _p in (_PROJECT_ROOT, _TRDAUTO):
 # ---------------------------------------------------------------------------
 import pandas as pd  # noqa: E402
 
-from config.assets import ALL_ASSETS  # noqa: E402
+from config.assets import ALL_ASSETS  # noqa: E402  # kept for type reference
 from data.connectors.coingecko import CoinGeckoConnector  # noqa: E402
 from data.connectors.yahoo_finance import YahooFinanceConnector  # noqa: E402
 from data.base import DataSourceBase  # noqa: E402
@@ -54,7 +54,7 @@ from data.strategies import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # paper_trader imports
 # ---------------------------------------------------------------------------
-from paper_trader.bots import BotConfig  # noqa: E402
+from paper_trader.bots import BotConfig, get_assets_for_bot  # noqa: E402
 from paper_trader.portfolio import Portfolio  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,8 @@ def check_and_execute(
     # ------------------------------------------------------------------
     # 3 & 4. Signal scan — sell weak, buy strong
     # ------------------------------------------------------------------
-    for label, asset_cfg in ALL_ASSETS.items():
+    assets = get_assets_for_bot(bot_config)
+    for label, asset_cfg in assets.items():
         source: str = asset_cfg["source"]
         symbol = asset_cfg["id"]
 
@@ -252,6 +253,12 @@ def check_and_execute(
         else:
             df = _fetch_ohlcv(source, symbol, bot_config.timeframe)
         score, active_strategies = _compute_confluence(df, bot_config.strategy_filter)
+        if bot_config.use_sentiment:
+            # Sentiment integration placeholder — wire up data.sentiment when ready.
+            sentiment_score: int = 0
+        else:
+            sentiment_score = 0
+        _ = sentiment_score  # available for future confluence adjustment
         logger.debug("[%s] %s score=%d strategies=%s", bot_config.bot_id, label, score, active_strategies)
 
         # Reuse already-fetched price when available; otherwise fetch now.
@@ -280,6 +287,11 @@ def check_and_execute(
 
         # --- Buy on strong signal -----------------------------------------
         elif score >= bot_config.min_confluence and symbol not in open_by_symbol_fresh:
+            if bot_config.use_trend_filter:
+                from trd_auto.data.filters import is_uptrend_sma200  # noqa: PLC0415
+                if not is_uptrend_sma200(df):
+                    logger.debug("[%s] %s filtered out — not in SMA200 uptrend.", bot_config.bot_id, label)
+                    continue
             allocation = portfolio.cash * bot_config.max_position_pct
             if allocation <= 0 or current_price <= 0:
                 continue
