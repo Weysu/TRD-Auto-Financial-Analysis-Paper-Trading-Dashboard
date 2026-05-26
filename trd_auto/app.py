@@ -229,17 +229,17 @@ def dashboard() -> None:
 
 
 st.set_page_config(
-    page_title="TRD Auto — Financial Dashboard",
-    page_icon="📈",
+    page_title="TRD Auto",
+    page_icon="◈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 pg = st.navigation(
     [
-        st.Page(dashboard, title="Dashboard", icon="📈"),
-        st.Page("backtest.py", title="Backtest",  icon="🔬"),
-        st.Page(_paper_trading_page, title="Paper Trading", icon="💼"),
+        st.Page(dashboard, title="Dashboard"),
+        st.Page("backtest.py", title="Backtest"),
+        st.Page(_paper_trading_page, title="Paper Trading"),
     ]
 )
 pg.run()

@@ -26,6 +26,7 @@ import pandas as pd
 import streamlit as st
 
 from charts.metrics import render_metrics
+from config.tooltips import INDICATOR_TOOLTIPS, METRIC_TOOLTIPS
 from charts.price_chart import PriceChart, render_macd, render_rsi
 from charts.sentiment_chart import render_sentiment
 from charts.volume_chart import VolumeChart
@@ -35,6 +36,12 @@ from data.signal_engine import compute_confluence
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+
+def _tip(label: str, tooltip: str) -> str:
+    """Return a label with a hover tooltip using Streamlit's help parameter pattern."""
+    return label  # used with st.metric(..., help=tooltip)
+
 
 def _render_confluence(confluence: dict) -> None:
     """Render the confluence score, signal badge, breakdown table, and disclaimer."""
@@ -48,12 +55,13 @@ def _render_confluence(confluence: dict) -> None:
 
     with col_score:
         # Use a numeric delta (+1 / -1 / 0) to drive green / red / grey colouring.
+        _cs_help = INDICATOR_TOOLTIPS.get("Confluence Score", "")
         if score >= 3:
-            st.metric("Confluence Score", f"{score} / {max_score}", delta=1,  delta_color="normal")
+            st.metric("Confluence Score", f"{score} / {max_score}", delta=1,  delta_color="normal", help=_cs_help)
         elif score <= 1:
-            st.metric("Confluence Score", f"{score} / {max_score}", delta=-1, delta_color="normal")
+            st.metric("Confluence Score", f"{score} / {max_score}", delta=-1, delta_color="normal", help=_cs_help)
         else:
-            st.metric("Confluence Score", f"{score} / {max_score}", delta=0,  delta_color="off")
+            st.metric("Confluence Score", f"{score} / {max_score}", delta=0,  delta_color="off",    help=_cs_help)
 
     with col_signal:
         st.markdown("**Signal**")
@@ -64,10 +72,10 @@ def _render_confluence(confluence: dict) -> None:
     rows: list[dict] = []
     for component, value in breakdown.items():
         if component == "Sentiment":
-            icon = "▲" if value > 0 else ("▼" if value < 0 else "→")
-            display = f"{icon} {value:+d}"
+            text = "+1" if value > 0 else ("-1" if value < 0 else "0")
+            display = text
         else:
-            display = "✓ Bullish" if value == 1 else "○ Bearish"
+            display = "Buy" if value == 1 else "–"
         rows.append({"Component": component, "Signal": display})
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
@@ -182,12 +190,12 @@ def render_main(
     if len(df) >= 60:
         confluence: dict = compute_confluence(df, sentiment)
         st.divider()
-        st.subheader("🎯 Trading Signal")
+        st.subheader("Trading Signal")
         _render_confluence(confluence)
 
     # ------------------------------------------------------------------
     # 6. News sentiment
     # ------------------------------------------------------------------
     st.divider()
-    st.subheader("✉️ News Sentiment")
+    st.subheader("News Sentiment")
     render_sentiment(sentiment)

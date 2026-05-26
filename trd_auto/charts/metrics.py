@@ -38,6 +38,8 @@ import math
 import pandas as pd
 import streamlit as st
 
+from config.tooltips import METRIC_TOOLTIPS
+
 
 # ---------------------------------------------------------------------------
 # Private formatting helpers
@@ -118,12 +120,17 @@ def render_metrics(summary: dict) -> None:
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric(label="Price", value=_fmt_price(price), delta=price_delta)
+        st.metric(label="Price", value=_fmt_price(price), delta=price_delta,
+                  help=METRIC_TOOLTIPS.get("Price", ""))
     with col2:
-        st.metric(label="Period Chg.", value=_fmt_pct(change_pct))
+        st.metric(label="Period Chg.", value=_fmt_pct(change_pct),
+                  help=METRIC_TOOLTIPS.get("Period Chg.", ""))
     with col3:
-        st.metric(label="High", value=_fmt_price(high))
+        st.metric(label="High", value=_fmt_price(high),
+                  help=METRIC_TOOLTIPS.get("High", ""))
     with col4:
-        st.metric(label="Low", value=_fmt_price(low))
+        st.metric(label="Low", value=_fmt_price(low),
+                  help=METRIC_TOOLTIPS.get("Low", ""))
     with col5:
-        st.metric(label="Volatility", value=_fmt_volatility(volatility))
+        st.metric(label="Volatility", value=_fmt_volatility(volatility),
+                  help=METRIC_TOOLTIPS.get("Volatility", ""))

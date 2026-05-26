@@ -23,6 +23,7 @@ from data.strategies import (
     run_macd_crossover,
     run_rsi_strategy,
 )
+from config.tooltips import INDICATOR_TOOLTIPS, METRIC_TOOLTIPS
 from ui.sidebar import render_sidebar
 
 # ---------------------------------------------------------------------------
@@ -73,11 +74,15 @@ def _render_strategy_sidebar() -> tuple[str, dict]:
     """
     with st.sidebar:
         st.divider()
-        st.subheader("Strategy")
+        st.caption("Strategy")
         strategy: str = st.selectbox(
-            "Select strategy",
+            "Strategy",
             _STRATEGY_OPTIONS,
             label_visibility="collapsed",
+            key="backtest_strategy",
+            help=INDICATOR_TOOLTIPS.get(
+                st.session_state.get("backtest_strategy", _STRATEGY_OPTIONS[0]), ""
+            ),
         )
 
         params: dict = {}
@@ -202,17 +207,23 @@ def _render_kpis(result: dict) -> None:
             "Total Return",
             f"{total_ret:.2f}%",
             delta=f"{total_ret - bh_ret:+.2f}% vs B&H",
+            help=METRIC_TOOLTIPS.get("Total Return Backtest", ""),
         )
     with cols[1]:
-        st.metric("Buy & Hold", f"{bh_ret:.2f}%")
+        st.metric("Buy & Hold", f"{bh_ret:.2f}%",
+                  help=METRIC_TOOLTIPS.get("Buy & Hold", ""))
     with cols[2]:
-        st.metric("Trades", num_trades)
+        st.metric("Trades", num_trades,
+                  help=METRIC_TOOLTIPS.get("Trades", ""))
     with cols[3]:
-        st.metric("Win Rate", f"{win_rate * 100:.1f}%")
+        st.metric("Win Rate", f"{win_rate * 100:.1f}%",
+                  help=METRIC_TOOLTIPS.get("Win Rate", ""))
     with cols[4]:
-        st.metric("Max Drawdown", f"{abs(drawdown):.2f}%")
+        st.metric("Max Drawdown", f"{abs(drawdown):.2f}%",
+                  help=METRIC_TOOLTIPS.get("Max Drawdown", ""))
     with cols[5]:
-        st.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        st.metric("Sharpe Ratio", f"{sharpe:.2f}",
+                  help=METRIC_TOOLTIPS.get("Sharpe Ratio", ""))
 
 
 def _render_trade_log(result: dict) -> None:
@@ -236,7 +247,7 @@ def _render_trade_log(result: dict) -> None:
             "exit_price":  "Exit Price",
             "shares":      "Shares",
             "pnl":         "P&L",
-            "return_pct":  "Return",
+            "return_pct":  "Return (%)",
         },
         inplace=True,
     )
@@ -260,8 +271,8 @@ def main() -> None:
     symbol: str = asset_cfg["id"]
 
     # 3. Header
-    st.title(f"Backtest — {strategy}")
-    st.caption(f"{asset_label}  ·  {time_range_label}  ·  {symbol}")
+    st.subheader("Backtest")
+    st.caption(f"{strategy}  ·  {asset_label}  ·  {time_range_label}")
 
     # 4. Fetch + validate
     if source not in _CONNECTOR_REGISTRY:
@@ -294,7 +305,7 @@ def main() -> None:
 
     # 8. KPI row
     st.divider()
-    st.subheader("Performance Metrics")
+    st.caption("Performance Metrics")
     _render_kpis(result)
 
     # 9. Trade log

@@ -80,21 +80,21 @@ def render_sidebar() -> tuple[str, dict, str]:
     )
 
     with st.sidebar:
-        st.title("TRD Auto")
-        st.caption("Financial Data Dashboard")
+        st.markdown("### TRD Auto")
+        st.caption("Paper trading & analysis platform")
         st.divider()
 
-        st.subheader("Asset")
+        st.caption("Asset")
         asset_label: str = st.selectbox(
-            label="asset_select",
+            label="Asset",
             options=asset_labels,
             index=default_asset_idx,
             label_visibility="collapsed",
         )
 
-        st.subheader("Time Range")
+        st.caption("Time Range")
         time_range_label: str = st.radio(
-            label="time_range_radio",
+            label="Time Range",
             options=time_range_labels,
             index=default_tr_idx,
             horizontal=True,

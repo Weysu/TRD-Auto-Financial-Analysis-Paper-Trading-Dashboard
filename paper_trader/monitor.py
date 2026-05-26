@@ -17,7 +17,7 @@ Layout
 
 Imported by ``trd_auto/app.py`` as a navigation page::
 
-    st.Page(paper_trading_page, title="Paper Trading", icon="💼")
+    st.Page(paper_trading_page, title="Paper Trading")
 """
 
 from __future__ import annotations
@@ -63,6 +63,8 @@ from data.connectors.yahoo_finance import YahooFinanceConnector  # noqa: E402
 import streamlit as st  # noqa: E402
 import pandas as pd  # noqa: E402
 
+from config.tooltips import BOT_TOOLTIPS, METRIC_TOOLTIPS  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -71,7 +73,7 @@ import pandas as pd  # noqa: E402
 
 def _colour_return(val: float) -> str:
     """Return a CSS colour string for a return percentage value."""
-    return "color: green" if val > 0 else "color: red" if val < 0 else ""
+    return "color: #26a69a" if val > 0 else "color: #ef5350" if val < 0 else ""
 
 
 def _summary_df(all_portfolios: list[dict[str, Any]]) -> pd.DataFrame:
@@ -214,16 +216,13 @@ def paper_trading_page() -> None:
     # Ensure DB and portfolio rows exist.
     init_db(BOTS)
 
-    st.title("Paper Trading — Multi-Bot Monitor")
-    st.caption(
-        "Live paper trading results for 5 independent strategy bots.  "
-        "The engine runs a new signal cycle every 4 hours."
-    )
+    st.subheader("Paper Trading")
+    st.caption("Autonomous bots — signal cycle every 4 hours.")
 
     # ------------------------------------------------------------------
     # 1. Summary table
     # ------------------------------------------------------------------
-    st.subheader("All Bots — Summary")
+    st.caption("All Bots")
     all_portfolios = get_all_portfolios()
 
     if not all_portfolios:
@@ -234,7 +233,7 @@ def paper_trading_page() -> None:
 
     def _row_style(row: pd.Series) -> list[str]:
         ret = row.get("Total Return (%)", 0.0)
-        colour = "color: #2ecc71" if ret > 0 else "color: #e74c3c" if ret < 0 else ""
+        colour = "color: #26a69a" if ret > 0 else "color: #ef5350" if ret < 0 else ""
         return [colour] * len(row)
 
     st.dataframe(
@@ -248,6 +247,7 @@ def paper_trading_page() -> None:
         use_container_width=True,
         hide_index=True,
     )
+    st.caption("Equity includes unrealized PnL from open positions at last fetched price.")
 
     st.divider()
 
@@ -256,9 +256,10 @@ def paper_trading_page() -> None:
     # ------------------------------------------------------------------
     bot_options = [cfg.name for cfg in BOTS.values()]
     bot_ids = list(BOTS.keys())
-    selected_name = st.selectbox("Select a bot for detailed view", bot_options)
+    selected_name = st.selectbox("Bot", bot_options)
     selected_bot_id = bot_ids[bot_options.index(selected_name)]
     selected_cfg = BOTS[selected_bot_id]
+    st.caption(BOT_TOOLTIPS.get(selected_bot_id, ""))
 
     portfolio_row = get_portfolio(selected_bot_id) or {}
     initial_cap: float = portfolio_row.get("initial_capital", selected_cfg.initial_capital)
@@ -283,14 +284,18 @@ def paper_trading_page() -> None:
 
     # KPI tiles
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Equity", f"${equity:,.2f}")
-    col2.metric("Cash", f"${current_cap:,.2f}")
+    col1.metric("Equity", f"${equity:,.2f}",
+                help=METRIC_TOOLTIPS.get("Equity", ""))
+    col2.metric("Cash", f"${current_cap:,.2f}",
+                help=METRIC_TOOLTIPS.get("Cash", ""))
     col3.metric(
         "Total Return",
         f"{total_ret:+.2f}%",
         delta_color="normal",
+        help=METRIC_TOOLTIPS.get("Total Return", ""),
     )
-    col4.metric("Open Positions", str(open_pos_count))
+    col4.metric("Open Positions", str(open_pos_count),
+                help=METRIC_TOOLTIPS.get("Open Positions", ""))
 
     st.caption(
         f"Timeframe: **{selected_cfg.timeframe}**  |  "
@@ -303,7 +308,7 @@ def paper_trading_page() -> None:
     st.divider()
 
     # Open positions
-    st.subheader("Open Positions")
+    st.caption("Open Positions")
     open_df = _open_positions_df(selected_bot_id, selected_cfg)
     if open_df.empty:
         st.info("No open positions.")
@@ -322,7 +327,7 @@ def paper_trading_page() -> None:
         )
 
     # Closed trades
-    st.subheader("Trade History")
+    st.caption("Trade History")
     trades_df = _trades_df(selected_bot_id)
     if trades_df.empty:
         st.info("No closed trades yet.")
@@ -330,7 +335,7 @@ def paper_trading_page() -> None:
 
         def _pnl_colour(row: pd.Series) -> list[str]:
             val = row.get("PnL ($)", 0.0)
-            colour = "color: #2ecc71" if val > 0 else "color: #e74c3c" if val < 0 else ""
+            colour = "color: #26a69a" if val > 0 else "color: #ef5350" if val < 0 else ""
             return [colour] * len(row)
 
         fmt: dict[str, str] = {}
@@ -350,7 +355,7 @@ def paper_trading_page() -> None:
         )
 
     # Equity curve
-    st.subheader("Equity Curve")
+    st.caption("Equity Curve")
     curve = _equity_curve(selected_bot_id, initial_cap, current_equity=equity)
     if curve is None or curve.empty:
         st.info("Not enough trade history to draw an equity curve.")
