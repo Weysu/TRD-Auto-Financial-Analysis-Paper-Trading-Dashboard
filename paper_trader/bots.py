@@ -131,6 +131,29 @@ BOTS: dict[str, BotConfig] = {
         asset_universe="stocks_focused",
     ),
 
+    "equity_trend_custom": BotConfig(
+        bot_id="equity_trend_custom",
+        name="Equity Trend Custom",
+        description="Equity Trend with custom asset selection — experimental sandbox",
+        initial_capital=10_000.0,
+        max_position_pct=0.20,
+        min_confluence=2,
+        sell_threshold=0,
+        strategy_filter=("ma", "rsi", "bb", "macd"),
+        timeframe="1Y",
+        stop_loss_pct=0.08,
+        take_profit_levels=(
+            {"target_pct": 0.08,               "close_fraction": 0.25, "move_sl_to": 0.0},
+            {"target_pct": 0.15,               "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.25,               "close_fraction": 0.25, "move_sl_to": "tp2"},
+            {"target_pct": "trailing_2.5pct",  "close_fraction": 1.00, "move_sl_to": None},
+        ),
+        cycle_hours=6,
+        use_sentiment=False,
+        use_trend_filter=True,
+        asset_universe="stocks_custom",
+    ),
+
     # ── Disabled bots ──────────────────────────────────────────────────────────────
     # "crypto_trend":    crypto momentum (MA + MACD, 10k, crypto universe)
     # "crypto_reversion": mean reversion (RSI + BB, 10k, crypto universe)
@@ -149,4 +172,6 @@ def get_assets_for_bot(bot: BotConfig) -> dict[str, dict]:
         return STOCK_ASSETS
     if bot.asset_universe == "stocks_focused":
         return FOCUSED_STOCK_ASSETS
+    if bot.asset_universe == "stocks_custom":
+        return STOCK_ASSETS
     return ALL_ASSETS

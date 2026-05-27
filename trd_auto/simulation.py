@@ -229,6 +229,8 @@ def run_simulation(
     bot_cfg: BotConfig,
     all_data: dict[str, pd.DataFrame],
     fractional: bool = False,
+    leverage: float = 1.0,
+    asset_override: dict[str, dict] | None = None,
 ) -> SimulationResult:
     """
     Walk-forward simulation from 2025-01-01 to today.
@@ -247,6 +249,9 @@ def run_simulation(
     """
     from data.filters import is_uptrend_sma200      # noqa: PLC0415
     from data.indicators import compute_indicators  # noqa: PLC0415
+
+    if asset_override is not None:
+        all_data = {k: v for k, v in all_data.items() if k in asset_override}
 
     cash: float = bot_cfg.initial_capital
     open_positions: dict[str, SimPosition] = {}
@@ -400,7 +405,7 @@ def run_simulation(
 
             # Buy signal
             if score >= bot_cfg.min_confluence and label not in open_positions:
-                allocation = cash * bot_cfg.max_position_pct
+                allocation = cash * bot_cfg.max_position_pct * leverage
                 if allocation >= current_price:
                     _raw_shares: float = allocation / current_price
                     if fractional:

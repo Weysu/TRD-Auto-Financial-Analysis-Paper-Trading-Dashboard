@@ -455,6 +455,24 @@ def backtest_bot_page() -> None:
         )
         bot_cfg = BOTS[bot_id]
         st.caption(BOT_TOOLTIPS.get(bot_id, ""))
+        if bot_cfg.bot_id == "equity_trend_custom":
+            from trd_auto.config.assets import STOCK_ASSETS  # noqa: PLC0415
+            all_stock_labels: list[str] = list(STOCK_ASSETS.keys())
+            selected_labels: list[str] = st.multiselect(
+                "Select assets",
+                options=all_stock_labels,
+                default=all_stock_labels[:8],
+                help="Choose which assets to include in the simulation. Minimum 2 required.",
+            )
+            if len(selected_labels) < 2:
+                st.error("Select at least 2 assets.")
+                st.stop()
+            custom_assets: dict[str, dict] | None = {
+                k: v for k, v in STOCK_ASSETS.items() if k in selected_labels
+            }
+        else:
+            selected_labels = []
+            custom_assets = None
         st.divider()
         st.caption("Initial Capital")
         capital: float = st.number_input(
@@ -491,6 +509,23 @@ def backtest_bot_page() -> None:
             ),
         )
         st.divider()
+        st.caption("Leverage")
+        leverage: float = st.number_input(
+            "Leverage",
+            min_value=1.0,
+            max_value=5.0,
+            value=1.0,
+            step=0.1,
+            format="%.1f",
+            label_visibility="collapsed",
+            help="1.0 = no leverage. 2.0 = double position size. Max 5x. Amplifies both gains and losses proportionally.",
+        )
+        if leverage > 1.0:
+            st.caption(
+                f"Leverage {leverage}x — gains and losses multiplied by {leverage}x. "
+                f"Max drawdown will be approximately {leverage}x higher."
+            )
+        st.divider()
         run_clicked = st.button(
             "Run Simulation",
             use_container_width=True,
@@ -511,7 +546,13 @@ def backtest_bot_page() -> None:
     # ------------------------------------------------------------------
     # Cache key: invalidate when bot or capital changes
     # ------------------------------------------------------------------
-    cache_key = f"_sim_result_{bot_id}_{int(capital)}_{interval}_{fractional}"
+    if custom_assets is not None:
+        cache_key = (
+            f"_sim_result_{bot_id}_{int(capital)}_{interval}_{fractional}_{leverage}"
+            f"_{'_'.join(sorted(selected_labels))}"
+        )
+    else:
+        cache_key = f"_sim_result_{bot_id}_{int(capital)}_{interval}_{fractional}_{leverage}"
 
     # Override initial_capital with the user-selected value
     sim_cfg = dataclasses.replace(bot_cfg, initial_capital=capital)
@@ -537,7 +578,10 @@ def backtest_bot_page() -> None:
             return
 
         with st.spinner("Running simulation..."):
-            result = run_simulation(sim_cfg, all_data, fractional=fractional)
+            result = run_simulation(
+                sim_cfg, all_data, fractional=fractional, leverage=leverage,
+                asset_override=custom_assets,
+            )
 
         st.session_state[cache_key] = (result, all_data)
     else:
