@@ -25,7 +25,7 @@ for _p in (_PROJECT_ROOT, _TRDAUTO_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from paper_trader.bots import BOTS, get_assets_for_bot  # noqa: E402
+from paper_trader.bots import BOTS, BotConfig, get_assets_for_bot  # noqa: E402
 from config.tooltips import BOT_TOOLTIPS, METRIC_TOOLTIPS  # noqa: E402
 from simulation import (  # noqa: E402
     SimulationResult,
@@ -414,6 +414,24 @@ def _render_walk_forward(result: SimulationResult) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Hourly support helper
+# ---------------------------------------------------------------------------
+
+def _bot_supports_hourly(bot_cfg: BotConfig) -> bool:
+    """Returns True if the bot's asset universe supports hourly data (yahoo only)."""
+    from trd_auto.config.assets import ALL_ASSETS  # noqa: PLC0415
+    bot_assets = [
+        cfg for cfg in ALL_ASSETS.values()
+        if cfg.get("source") == "coingecko"
+    ]
+    # If bot explicitly targets crypto universe, no hourly support
+    if bot_cfg.asset_universe == "crypto":
+        return False
+    # If bot targets stocks or mixed, hourly is supported
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Page entry point
 # ---------------------------------------------------------------------------
 
@@ -449,25 +467,20 @@ def backtest_bot_page() -> None:
             label_visibility="collapsed",
             key="sim_capital",
         )
-        _bot_assets: dict = get_assets_for_bot(bot_cfg)
-        _is_yahoo_only: bool = bool(_bot_assets) and all(
-            a["source"] == "yahoo" for a in _bot_assets.values()
-        )
-        if _is_yahoo_only:
+        if _bot_supports_hourly(bot_cfg):
             st.divider()
             st.caption("Data Frequency")
-            _freq_label: str = st.selectbox(
+            _freq_label: str = st.radio(
                 "Data Frequency",
-                options=["Daily (1D)", "Hourly (1H)"],
+                options=["1D", "1H"],
                 label_visibility="collapsed",
                 key="sim_data_freq",
+                horizontal=True,
             )
-            st.caption(
-                "Hourly data available for stocks and ETFs only (2 years history)."
-            )
-            interval: str = "1h" if _freq_label == "Hourly (1H)" else "1d"
+            interval: str = "1h" if _freq_label == "1H" else "1d"
         else:
             interval = "1d"
+            st.caption("Hourly data not available for crypto assets — daily only.")
         st.divider()
         fractional: bool = st.checkbox(
             "Fractional Shares (CFD mode)",

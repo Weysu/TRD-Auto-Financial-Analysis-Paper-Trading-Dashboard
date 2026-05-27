@@ -240,9 +240,8 @@ st.set_page_config(
 pg = st.navigation(
     [
         st.Page(dashboard, title="Dashboard"),
-        st.Page("backtest.py", title="Backtest"),
         st.Page(_paper_trading_page, title="Paper Trading"),
-        st.Page(backtest_bot_page, title="Bot Simulation"),
+        st.Page(backtest_bot_page, title="Simulation"),
     ]
 )
 pg.run()

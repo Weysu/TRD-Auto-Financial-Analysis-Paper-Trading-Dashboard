@@ -35,6 +35,7 @@ import logging
 import os
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -43,10 +44,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Database lives at the project root so both containers share a single bind-mount.
-_DB_PATH: str = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "paper_trader.db",
-)
+_DB_PATH: Path = Path(__file__).resolve().parent.parent / "paper_trader.db"
 
 # DDL for a clean (new) database.
 _DDL: str = """

@@ -85,68 +85,22 @@ class BotConfig:
 # ---------------------------------------------------------------------------
 
 BOTS: dict[str, BotConfig] = {
-
-    # ── Crypto ─────────────────────────────────────────────────────────────────────
-    "crypto_trend": BotConfig(
-        bot_id="crypto_trend",
-        name="Crypto Trend",
-        description="Rides directional momentum on major crypto assets.",
-        initial_capital=10_000.0,
-        max_position_pct=0.20,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("ma", "macd"),
-        timeframe="1Y",
-        stop_loss_pct=0.05,
-        take_profit_levels=(
-            {"target_pct": 0.04, "close_fraction": 0.30, "move_sl_to": 0.0},
-            {"target_pct": 0.08, "close_fraction": 0.30, "move_sl_to": "tp1"},
-            {"target_pct": 0.15, "close_fraction": 1.00, "move_sl_to": None},
-        ),
-        cycle_hours=4,
-        use_sentiment=False,
-        use_trend_filter=False,
-        asset_universe="crypto",
-    ),
-
-    "crypto_reversion": BotConfig(
-        bot_id="crypto_reversion",
-        name="Crypto Mean Reversion",
-        description="Buys crypto oversold conditions confirmed by Bollinger Bands.",
-        initial_capital=10_000.0,
-        max_position_pct=0.15,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("rsi", "bb"),
-        timeframe="3M",
-        stop_loss_pct=0.04,
-        take_profit_levels=(
-            {"target_pct": 0.03, "close_fraction": 0.50, "move_sl_to": 0.0},
-            {"target_pct": 0.06, "close_fraction": 1.00, "move_sl_to": None},
-        ),
-        cycle_hours=4,
-        use_sentiment=True,
-        use_trend_filter=False,
-        asset_universe="crypto",
-    ),
-
-    # ── Equities ────────────────────────────────────────────────────────────
     "equity_trend": BotConfig(
         bot_id="equity_trend",
         name="Equity Trend",
-        description="Follows long-duration trends on stocks above their SMA200.",
+        description="Multi-signal trend following on equities — CFD mode with trailing stop",
         initial_capital=10_000.0,
         max_position_pct=0.15,
         min_confluence=2,
         sell_threshold=0,
-        strategy_filter=("ma", "macd"),
+        strategy_filter=("ma", "rsi", "bb", "macd"),
         timeframe="1Y",
-        stop_loss_pct=0.10,
+        stop_loss_pct=0.08,
         take_profit_levels=(
-            {"target_pct": 0.08,            "close_fraction": 0.25, "move_sl_to": 0.0},
-            {"target_pct": 0.15,            "close_fraction": 0.35, "move_sl_to": "tp1"},
-            {"target_pct": 0.25,            "close_fraction": 0.25, "move_sl_to": "tp2"},
-            {"target_pct": "trailing_5pct", "close_fraction": 1.00, "move_sl_to": None},
+            {"target_pct": 0.08,               "close_fraction": 0.25, "move_sl_to": 0.0},
+            {"target_pct": 0.15,               "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.25,               "close_fraction": 0.25, "move_sl_to": "tp2"},
+            {"target_pct": "trailing_2.5pct",  "close_fraction": 1.00, "move_sl_to": None},
         ),
         cycle_hours=6,
         use_sentiment=False,
@@ -154,71 +108,12 @@ BOTS: dict[str, BotConfig] = {
         asset_universe="stocks",
     ),
 
-    "equity_quality": BotConfig(
-        bot_id="equity_quality",
-        name="Equity Quality",
-        description="High-conviction stock setups — 3 signals required, trend confirmed.",
-        initial_capital=10_000.0,
-        max_position_pct=0.20,
-        min_confluence=3,
-        sell_threshold=1,
-        strategy_filter=("ma", "rsi", "bb", "macd"),
-        timeframe="1Y",
-        stop_loss_pct=0.07,
-        take_profit_levels=(
-            {"target_pct": 0.05, "close_fraction": 0.40, "move_sl_to": 0.0},
-            {"target_pct": 0.10, "close_fraction": 0.35, "move_sl_to": "tp1"},
-            {"target_pct": 0.18, "close_fraction": 1.00, "move_sl_to": None},
-        ),
-        cycle_hours=8,
-        use_sentiment=True,
-        use_trend_filter=True,
-        asset_universe="stocks",
-    ),
-
-    # ── Multi-asset ─────────────────────────────────────────────────────────
-    "scanner": BotConfig(
-        bot_id="scanner",
-        name="Multi-Asset Scanner",
-        description="Scans the full universe — only acts on maximum confluence setups.",
-        initial_capital=10_000.0,
-        max_position_pct=0.10,
-        min_confluence=4,
-        sell_threshold=2,
-        strategy_filter=("ma", "rsi", "bb", "macd"),
-        timeframe="1Y",
-        stop_loss_pct=0.07,
-        take_profit_levels=(
-            {"target_pct": 0.05, "close_fraction": 0.40, "move_sl_to": 0.0},
-            {"target_pct": 0.10, "close_fraction": 0.35, "move_sl_to": "tp1"},
-            {"target_pct": 0.18, "close_fraction": 1.00, "move_sl_to": None},
-        ),
-        cycle_hours=6,
-        use_sentiment=True,
-        use_trend_filter=False,
-        asset_universe="all",
-    ),
-
-    "breakout": BotConfig(
-        bot_id="breakout",
-        name="Breakout Hunter",
-        description="Detects Bollinger Band breakouts confirmed by MACD on all assets.",
-        initial_capital=10_000.0,
-        max_position_pct=0.10,
-        min_confluence=2,
-        sell_threshold=0,
-        strategy_filter=("bb", "macd"),
-        timeframe="3M",
-        stop_loss_pct=0.02,
-        take_profit_levels=(
-            {"target_pct": 0.02, "close_fraction": 0.50, "move_sl_to": 0.0},
-            {"target_pct": 0.04, "close_fraction": 1.00, "move_sl_to": None},
-        ),
-        cycle_hours=2,
-        use_sentiment=False,
-        use_trend_filter=False,
-        asset_universe="all",
-    ),
+    # ── Disabled bots ──────────────────────────────────────────────────────────────
+    # "crypto_trend":    crypto momentum (MA + MACD, 10k, crypto universe)
+    # "crypto_reversion": mean reversion (RSI + BB, 10k, crypto universe)
+    # "equity_quality":  high-conviction equities (3 signals, SMA200 filter)
+    # "scanner":         full-universe max-confluence scanner
+    # "breakout":        BB + MACD breakout on all assets
 }
 
 
