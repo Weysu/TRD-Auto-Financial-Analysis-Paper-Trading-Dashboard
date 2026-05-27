@@ -9,6 +9,7 @@ Sentiment score is always 0 — no historical news data is available.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -64,6 +65,10 @@ class SimPosition:
     shares: float
     entry_date: pd.Timestamp
     strategy: str
+    highest_price: float = 0.0       # highest close seen while position is open
+    tps_hit: int = 0                  # number of TP levels already triggered
+    stop_loss_price: float = 0.0      # dynamic SL — moved to BE/TP price as ladder runs
+    trailing_active: bool = False     # True once the last TP level is hit
 
 
 @dataclass
@@ -223,6 +228,7 @@ def fetch_simulation_data(
 def run_simulation(
     bot_cfg: BotConfig,
     all_data: dict[str, pd.DataFrame],
+    fractional: bool = False,
 ) -> SimulationResult:
     """
     Walk-forward simulation from 2025-01-01 to today.
@@ -288,6 +294,35 @@ def run_simulation(
         cash += proceeds
         del open_positions[label]
 
+    def _partial_close(
+        label: str,
+        pos: SimPosition,
+        close_shares: float,
+        price: float,
+        date: pd.Timestamp,
+        reason: str,
+    ) -> None:
+        """Close *close_shares* of an open position and record a partial trade."""
+        nonlocal cash
+        cost: float = close_shares * pos.entry_price
+        proceeds: float = close_shares * price
+        pnl: float = proceeds - cost
+        closed_trades.append(SimTrade(
+            symbol=label,
+            entry_price=pos.entry_price,
+            exit_price=price,
+            shares=close_shares,
+            entry_date=pos.entry_date,
+            exit_date=date,
+            pnl=pnl,
+            pnl_pct=pnl / cost * 100.0 if cost > 0.0 else 0.0,
+            reason=reason,
+        ))
+        cash += proceeds
+        pos.shares -= close_shares
+        if pos.shares <= 1e-8:  # effectively zero — close position fully
+            del open_positions[label]
+
     # ---- main loop ----
 
     for current_date in simulation_dates:
@@ -303,24 +338,61 @@ def run_simulation(
             score, _ = _compute_confluence(df, list(bot_cfg.strategy_filter))
             current_price = float(df["close"].iloc[-1])
 
-            # SL / TP on open positions
+            # SL / TP ladder / trailing-stop on open positions
             if label in open_positions:
                 pos = open_positions[label]
-                if current_price <= pos.entry_price * (1.0 - bot_cfg.stop_loss_pct):
+
+                # Update highest-price tracker (feeds trailing stop)
+                pos.highest_price = max(pos.highest_price, current_price)
+
+                # Stop-loss — dynamic price, may have been moved by TP ladder
+                if current_price <= pos.stop_loss_price:
                     _close(label, pos, current_price, current_date, "stop_loss")
                     continue
-                # Use the last fixed numeric TP level as the simulation take-profit target
-                _sim_tp: float = next(
-                    (
-                        float(tp["target_pct"])
-                        for tp in reversed(bot_cfg.take_profit_levels)
-                        if isinstance(tp.get("target_pct"), (int, float))
-                    ),
-                    0.20,
-                )
-                if current_price >= pos.entry_price * (1.0 + _sim_tp):
-                    _close(label, pos, current_price, current_date, "take_profit")
+
+                # TP ladder — process each unhit level in ascending order
+                _tp_levels: tuple[dict, ...] = bot_cfg.take_profit_levels
+                _tp_fully_closed: bool = False
+                for _tp_idx in range(pos.tps_hit, len(_tp_levels)):
+                    _tp: dict = _tp_levels[_tp_idx]
+                    _tgt = _tp.get("target_pct")
+                    if not isinstance(_tgt, (int, float)):
+                        break  # non-numeric level (e.g. "trailing_5pct") — stop
+                    if current_price < pos.entry_price * (1.0 + float(_tgt)):
+                        break  # price hasn’t reached this level yet
+                    # Partial close at this TP
+                    _close_shares: float = pos.shares * float(_tp["close_fraction"])
+                    _partial_close(
+                        label, pos, _close_shares,
+                        current_price, current_date, f"tp{_tp_idx + 1}",
+                    )
+                    # Update dynamic stop-loss based on move_sl_to rule
+                    _move_sl = _tp.get("move_sl_to")
+                    if _move_sl is not None:
+                        if _move_sl == 0.0:
+                            pos.stop_loss_price = pos.entry_price  # break-even
+                        elif isinstance(_move_sl, str) and _move_sl.startswith("tp"):
+                            _sl_tp_idx: int = int(_move_sl[2:]) - 1
+                            if 0 <= _sl_tp_idx < len(_tp_levels):
+                                _sl_tgt = _tp_levels[_sl_tp_idx].get("target_pct", 0.0)
+                                if isinstance(_sl_tgt, (int, float)):
+                                    pos.stop_loss_price = (
+                                        pos.entry_price * (1.0 + float(_sl_tgt))
+                                    )
+                    pos.tps_hit += 1
+                    if pos.tps_hit >= len(_tp_levels):
+                        pos.trailing_active = True
+                    if label not in open_positions:  # fully closed by _partial_close
+                        _tp_fully_closed = True
+                        break
+                if _tp_fully_closed:
                     continue
+
+                # Trailing stop — active after last TP hit; exits at -2.5% from highest
+                if pos.trailing_active and current_price <= pos.highest_price * 0.975:
+                    _close(label, pos, current_price, current_date, "trailing_stop")
+                    continue
+
                 # Sell signal
                 if score <= bot_cfg.sell_threshold:
                     _close(label, pos, current_price, current_date, "signal")
@@ -330,15 +402,27 @@ def run_simulation(
             if score >= bot_cfg.min_confluence and label not in open_positions:
                 allocation = cash * bot_cfg.max_position_pct
                 if allocation >= current_price:
-                    shares = allocation / current_price
+                    _raw_shares: float = allocation / current_price
+                    if fractional:
+                        _shares: float = _raw_shares
+                        _cost: float = allocation
+                    else:
+                        _shares = float(math.floor(_raw_shares))
+                        if _shares < 1.0:
+                            continue
+                        _cost = _shares * current_price
                     open_positions[label] = SimPosition(
                         symbol=label,
                         entry_price=current_price,
-                        shares=shares,
+                        shares=_shares,
                         entry_date=current_date,
                         strategy=",".join(bot_cfg.strategy_filter),
+                        highest_price=current_price,
+                        tps_hit=0,
+                        stop_loss_price=current_price * (1.0 - bot_cfg.stop_loss_pct),
+                        trailing_active=False,
                     )
-                    cash -= allocation
+                    cash -= _cost
 
         # Daily equity snapshot
         open_equity = 0.0

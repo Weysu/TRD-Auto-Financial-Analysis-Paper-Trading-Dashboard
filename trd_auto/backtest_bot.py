@@ -273,10 +273,12 @@ def _render_trade_log(result: SimulationResult) -> None:
     df_trades = pd.DataFrame(rows)
 
     def _row_style(row: pd.Series) -> list[str]:
-        color = (
-            "rgba(38,166,154,0.15)" if row["PnL ($)"] > 0
-            else "rgba(239,83,80,0.15)"
-        )
+        if row["Reason"] == "trailing_stop":
+            color = "rgba(0,150,136,0.30)"  # teal
+        elif row["PnL ($)"] > 0:
+            color = "rgba(38,166,154,0.15)"
+        else:
+            color = "rgba(239,83,80,0.15)"
         return [f"background-color: {color}"] * len(row)
 
     styled = df_trades.style.apply(_row_style, axis=1)
@@ -467,6 +469,15 @@ def backtest_bot_page() -> None:
         else:
             interval = "1d"
         st.divider()
+        fractional: bool = st.checkbox(
+            "Fractional Shares (CFD mode)",
+            value=False,
+            help=(
+                "When enabled, allows buying fractional shares — simulates CFD brokers "
+                "like MT5/IG/Pepperstone. When disabled, rounds down to whole shares only."
+            ),
+        )
+        st.divider()
         run_clicked = st.button(
             "Run Simulation",
             use_container_width=True,
@@ -487,10 +498,22 @@ def backtest_bot_page() -> None:
     # ------------------------------------------------------------------
     # Cache key: invalidate when bot or capital changes
     # ------------------------------------------------------------------
-    cache_key = f"_sim_result_{bot_id}_{int(capital)}_{interval}"
+    cache_key = f"_sim_result_{bot_id}_{int(capital)}_{interval}_{fractional}"
 
     # Override initial_capital with the user-selected value
     sim_cfg = dataclasses.replace(bot_cfg, initial_capital=capital)
+    if bot_id == "equity_trend":
+        # Simulation override — restores original TP ladder + SL, keeps trailing stop logic
+        sim_cfg = dataclasses.replace(
+            sim_cfg,
+            stop_loss_pct=0.08,
+            take_profit_levels=(
+                {"target_pct": 0.08, "close_fraction": 0.25, "move_sl_to": 0.0},
+                {"target_pct": 0.15, "close_fraction": 0.35, "move_sl_to": "tp1"},
+                {"target_pct": 0.25, "close_fraction": 0.25, "move_sl_to": "tp2"},
+                {"target_pct": "trailing_2.5pct", "close_fraction": 1.00, "move_sl_to": None},
+            ),
+        )
 
     if run_clicked or cache_key not in st.session_state:
         with st.spinner("Loading historical data..."):
@@ -501,7 +524,7 @@ def backtest_bot_page() -> None:
             return
 
         with st.spinner("Running simulation..."):
-            result = run_simulation(sim_cfg, all_data)
+            result = run_simulation(sim_cfg, all_data, fractional=fractional)
 
         st.session_state[cache_key] = (result, all_data)
     else:

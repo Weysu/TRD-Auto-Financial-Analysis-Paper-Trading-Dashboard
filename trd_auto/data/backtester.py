@@ -26,6 +26,7 @@ def run_backtest(
     df: pd.DataFrame,
     initial_capital: float = 10_000.0,
     annualization_factor: int = 252,
+    fractional: bool = False,
 ) -> dict[str, Any]:
     """Simulate a long-only strategy and compute performance metrics.
 
@@ -71,7 +72,7 @@ def run_backtest(
     signals: list[int] = df["signal"].tolist()
 
     capital: float = initial_capital
-    shares: int = 0
+    shares: float = 0.0
     buy_price: float = 0.0
     buy_date: Any = None
 
@@ -83,11 +84,20 @@ def run_backtest(
         sig = int(sig)
 
         if sig == 1 and shares == 0 and price > 0:
-            shares = int(capital // price)
-            if shares > 0:
+            _raw: float = capital / price
+            if fractional:
+                shares = _raw
                 capital -= shares * price
                 buy_price = price
                 buy_date = ts
+            else:
+                shares = float(math.floor(_raw))
+                if shares >= 1.0:
+                    capital -= shares * price
+                    buy_price = price
+                    buy_date = ts
+                else:
+                    shares = 0.0
 
         elif sig == -1 and shares > 0:
             proceeds = shares * price

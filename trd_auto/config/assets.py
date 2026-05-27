@@ -50,7 +50,6 @@ STOCK_ASSETS_BY_SECTOR: dict[str, dict[str, dict]] = {
         "Alphabet (GOOGL)":   {"source": "yahoo", "id": "GOOGL"},
         "Meta (META)":        {"source": "yahoo", "id": "META"},
         "AMD (AMD)":          {"source": "yahoo", "id": "AMD"},
-        "Salesforce (CRM)":   {"source": "yahoo", "id": "CRM"},
         "Adobe (ADBE)":       {"source": "yahoo", "id": "ADBE"},
     },
     "Healthcare": {
