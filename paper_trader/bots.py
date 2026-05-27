@@ -108,6 +108,29 @@ BOTS: dict[str, BotConfig] = {
         asset_universe="stocks",
     ),
 
+    "equity_trend_focused": BotConfig(
+        bot_id="equity_trend_focused",
+        name="Equity Trend Focused",
+        description="Equity Trend on best 8 proven performers only — concentrated alpha",
+        initial_capital=10_000.0,
+        max_position_pct=0.20,
+        min_confluence=2,
+        sell_threshold=0,
+        strategy_filter=("ma", "rsi", "bb", "macd"),
+        timeframe="1Y",
+        stop_loss_pct=0.08,
+        take_profit_levels=(
+            {"target_pct": 0.08,               "close_fraction": 0.25, "move_sl_to": 0.0},
+            {"target_pct": 0.15,               "close_fraction": 0.35, "move_sl_to": "tp1"},
+            {"target_pct": 0.25,               "close_fraction": 0.25, "move_sl_to": "tp2"},
+            {"target_pct": "trailing_2.5pct",  "close_fraction": 1.00, "move_sl_to": None},
+        ),
+        cycle_hours=6,
+        use_sentiment=False,
+        use_trend_filter=True,
+        asset_universe="stocks_focused",
+    ),
+
     # ── Disabled bots ──────────────────────────────────────────────────────────────
     # "crypto_trend":    crypto momentum (MA + MACD, 10k, crypto universe)
     # "crypto_reversion": mean reversion (RSI + BB, 10k, crypto universe)
@@ -119,9 +142,11 @@ BOTS: dict[str, BotConfig] = {
 
 def get_assets_for_bot(bot: BotConfig) -> dict[str, dict]:
     """Return the asset subset this bot should scan."""
-    from trd_auto.config.assets import STOCK_ASSETS, CRYPTO_ASSETS, ALL_ASSETS  # noqa: PLC0415
+    from trd_auto.config.assets import STOCK_ASSETS, CRYPTO_ASSETS, ALL_ASSETS, FOCUSED_STOCK_ASSETS  # noqa: PLC0415
     if bot.asset_universe == "crypto":
         return CRYPTO_ASSETS
     if bot.asset_universe == "stocks":
         return STOCK_ASSETS
+    if bot.asset_universe == "stocks_focused":
+        return FOCUSED_STOCK_ASSETS
     return ALL_ASSETS

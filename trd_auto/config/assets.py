@@ -109,6 +109,20 @@ STOCK_ASSETS: dict[str, dict] = {
 }
 
 # ---------------------------------------------------------------------------
+# Focused equity universe — 8 proven performers used by equity_trend_focused
+# ---------------------------------------------------------------------------
+FOCUSED_STOCK_ASSETS: dict[str, dict] = {
+    "AMD (AMD)":                    {"source": "yahoo", "id": "AMD"},
+    "Alphabet (GOOGL)":             {"source": "yahoo", "id": "GOOGL"},
+    "Nvidia (NVDA)":                {"source": "yahoo", "id": "NVDA"},
+    "Amazon (AMZN)":                {"source": "yahoo", "id": "AMZN"},
+    "Marathon Petroleum (MPC)":     {"source": "yahoo", "id": "MPC"},
+    "Caterpillar (CAT)":            {"source": "yahoo", "id": "CAT"},
+    "Merck (MRK)":                  {"source": "yahoo", "id": "MRK"},
+    "Occidental (OXY)":             {"source": "yahoo", "id": "OXY"},
+}
+
+# ---------------------------------------------------------------------------
 # Crypto assets  (CoinGecko coin IDs)
 # ---------------------------------------------------------------------------
 CRYPTO_ASSETS: dict[str, dict] = {
