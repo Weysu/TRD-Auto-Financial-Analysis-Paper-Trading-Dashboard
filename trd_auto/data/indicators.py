@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pandas_ta as ta
 
-_MIN_ROWS: int = 15
+_MIN_ROWS: int = 10
 
 
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:

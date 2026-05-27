@@ -68,13 +68,6 @@ def render_sidebar() -> tuple[str, dict, str]:
         Passed directly to connector methods as the ``period`` argument.
     """
     asset_labels: list[str] = list(ALL_ASSETS.keys())
-    time_range_labels: list[str] = [tr["label"] for tr in TIME_RANGES]
-
-    default_tr_idx: int = (
-        time_range_labels.index(DEFAULT_TIME_RANGE_LABEL)
-        if DEFAULT_TIME_RANGE_LABEL in time_range_labels
-        else 0
-    )
 
     with st.sidebar:
         st.markdown("### TRD Auto")
@@ -108,10 +101,23 @@ def render_sidebar() -> tuple[str, dict, str]:
             label_visibility="collapsed",
         )
 
+        # 1H and 4H are intraday Yahoo-only ranges — hide them for CoinGecko assets.
+        _asset_source: str = ALL_ASSETS[asset_label]["source"]
+        _yahoo_only: frozenset[str] = frozenset({"1H", "4H"})
+        available_tr_labels: list[str] = [
+            tr["label"] for tr in TIME_RANGES
+            if _asset_source == "yahoo" or tr["label"] not in _yahoo_only
+        ]
+        default_tr_idx: int = (
+            available_tr_labels.index(DEFAULT_TIME_RANGE_LABEL)
+            if DEFAULT_TIME_RANGE_LABEL in available_tr_labels
+            else 0
+        )
+
         st.caption("Time Range")
         time_range_label: str = st.radio(
             label="Time Range",
-            options=time_range_labels,
+            options=available_tr_labels,
             index=default_tr_idx,
             horizontal=True,
             label_visibility="collapsed",

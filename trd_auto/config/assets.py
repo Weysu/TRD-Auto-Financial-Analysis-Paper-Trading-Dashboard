@@ -155,8 +155,10 @@ ASSETS_BY_SECTOR: dict[str, dict[str, dict]] = {
 #   "days"     -> number of calendar days used by CoinGecko connector
 # ---------------------------------------------------------------------------
 TIME_RANGES: list[dict[str, Any]] = [
-    {"label": "1D",  "period": "1d",  "interval": "5m",  "days": 1},
-    {"label": "1W",  "period": "7d",  "interval": "1h",  "days": 7},
+    {"label": "1D",  "period": "1d",   "interval": "5m",  "days": 1},
+    {"label": "1H",  "period": "730d", "interval": "1h",  "days": 730},
+    {"label": "4H",  "period": "60d",  "interval": "1h",  "days": 60},
+    {"label": "1W",  "period": "7d",   "interval": "1h",  "days": 7},
     {"label": "1M",  "period": "1mo", "interval": "1d",  "days": 30},
     {"label": "3M",  "period": "3mo", "interval": "1d",  "days": 90},
     {"label": "1Y",  "period": "1y",  "interval": "1wk", "days": 365},

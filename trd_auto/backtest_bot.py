@@ -50,8 +50,8 @@ _COLOR_DN = "#ef5350"
 # ---------------------------------------------------------------------------
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _cached_fetch(bot_id: str) -> dict[str, pd.DataFrame]:
-    return fetch_simulation_data(BOTS[bot_id])
+def _cached_fetch(bot_id: str, interval: str = "1d") -> dict[str, pd.DataFrame]:
+    return fetch_simulation_data(BOTS[bot_id], interval)
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +447,25 @@ def backtest_bot_page() -> None:
             label_visibility="collapsed",
             key="sim_capital",
         )
+        _bot_assets: dict = get_assets_for_bot(bot_cfg)
+        _is_yahoo_only: bool = bool(_bot_assets) and all(
+            a["source"] == "yahoo" for a in _bot_assets.values()
+        )
+        if _is_yahoo_only:
+            st.divider()
+            st.caption("Data Frequency")
+            _freq_label: str = st.selectbox(
+                "Data Frequency",
+                options=["Daily (1D)", "Hourly (1H)"],
+                label_visibility="collapsed",
+                key="sim_data_freq",
+            )
+            st.caption(
+                "Hourly data available for stocks and ETFs only (2 years history)."
+            )
+            interval: str = "1h" if _freq_label == "Hourly (1H)" else "1d"
+        else:
+            interval = "1d"
         st.divider()
         run_clicked = st.button(
             "Run Simulation",
@@ -468,14 +487,14 @@ def backtest_bot_page() -> None:
     # ------------------------------------------------------------------
     # Cache key: invalidate when bot or capital changes
     # ------------------------------------------------------------------
-    cache_key = f"_sim_result_{bot_id}_{int(capital)}"
+    cache_key = f"_sim_result_{bot_id}_{int(capital)}_{interval}"
 
     # Override initial_capital with the user-selected value
     sim_cfg = dataclasses.replace(bot_cfg, initial_capital=capital)
 
     if run_clicked or cache_key not in st.session_state:
         with st.spinner("Loading historical data..."):
-            all_data = _cached_fetch(bot_id)
+            all_data = _cached_fetch(bot_id, interval)
 
         if not all_data:
             st.error("No historical data could be fetched for this bot's assets.")

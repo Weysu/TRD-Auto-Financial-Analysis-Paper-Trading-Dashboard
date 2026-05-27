@@ -93,18 +93,24 @@ class SimulationResult:
 # Data fetching  (direct calls — bypasses the period-label connector system)
 # ---------------------------------------------------------------------------
 
-def _fetch_yahoo(symbol: str) -> pd.DataFrame:
+def _fetch_yahoo(symbol: str, interval: str = "1d") -> pd.DataFrame:
     """
-    Fetch daily OHLCV from Yahoo Finance from _FETCH_START to today.
+    Fetch OHLCV from Yahoo Finance.
+
+    For interval="1d" (default) fetches from _YFINANCE_FETCH_START to today.
+    For any other interval (e.g. "1h") uses period="730d" so yfinance
+    determines the window automatically.
     Returns a DataFrame with UTC DatetimeIndex and columns
     open / high / low / close / volume.  Returns empty DataFrame on failure.
     """
     try:
-        raw: pd.DataFrame = yf.Ticker(symbol).history(
-            start=_YFINANCE_FETCH_START,
-            auto_adjust=True,
-            actions=False,
-        )
+        _kwargs: dict = {"auto_adjust": True, "actions": False}
+        if interval == "1d":
+            _kwargs["start"] = _YFINANCE_FETCH_START
+        else:
+            _kwargs["period"] = "730d"
+            _kwargs["interval"] = interval
+        raw: pd.DataFrame = yf.Ticker(symbol).history(**_kwargs)
         if raw.empty:
             return pd.DataFrame()
         df = raw[["Open", "High", "Low", "Close", "Volume"]].copy()
@@ -171,9 +177,21 @@ def _fetch_coingecko(coin_id: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def fetch_simulation_data(bot_cfg: BotConfig) -> dict[str, pd.DataFrame]:
+def fetch_simulation_data(
+    bot_cfg: BotConfig,
+    interval: str = "1d",
+) -> dict[str, pd.DataFrame]:
     """
     Fetch full OHLCV history for every asset in the bot's universe.
+
+    Parameters
+    ----------
+    bot_cfg:
+        Bot configuration used to resolve the asset universe.
+    interval:
+        yfinance interval string (e.g. ``"1d"`` or ``"1h"``).  Only
+        applied to Yahoo Finance assets; CoinGecko assets always use
+        daily granularity.
 
     Returns a dict keyed by asset display label (same keys as
     ``get_assets_for_bot``).  Assets that fail to fetch are silently
@@ -185,7 +203,7 @@ def fetch_simulation_data(bot_cfg: BotConfig) -> dict[str, pd.DataFrame]:
         source = asset_cfg["source"]
         symbol = asset_cfg["id"]
         if source == "yahoo":
-            df = _fetch_yahoo(symbol)
+            df = _fetch_yahoo(symbol, interval)
         elif source == "coingecko":
             df = _fetch_coingecko(symbol)
         else:
