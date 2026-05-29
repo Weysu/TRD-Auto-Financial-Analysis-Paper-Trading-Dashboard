@@ -10,6 +10,7 @@ Current connectors
 ------------------
 yahoo_finance.py   : YahooFinanceConnector  — equities via yfinance
 coingecko.py       : CoinGeckoConnector     — crypto via pycoingecko
+mt5_connector.py   : MT5Connector           — equities/forex via MetaTrader5
 
 Planned connectors (do not implement yet)
 -----------------------------------------
@@ -25,3 +26,11 @@ Adding a connector
 3. Register the connector key in ``data.factory`` (to be created).
 4. No other module requires modification.
 """
+
+__all__: list[str] = []
+
+try:
+    from trd_auto.data.connectors.mt5_connector import MT5Connector
+    __all__ = [*__all__, "MT5Connector"]
+except ImportError:
+    pass

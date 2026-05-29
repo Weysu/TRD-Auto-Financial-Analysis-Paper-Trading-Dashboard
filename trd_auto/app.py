@@ -43,6 +43,12 @@ if _PROJECT_ROOT not in sys.path:
 from data.base import DataSourceBase
 from data.connectors.coingecko import CoinGeckoConnector
 from data.connectors.yahoo_finance import YahooFinanceConnector
+try:
+    from data.connectors.mt5_connector import MT5Connector as _MT5Connector
+    _MT5_CONNECTOR_AVAILABLE: bool = True
+except ImportError:
+    _MT5Connector = None  # type: ignore[assignment,misc]
+    _MT5_CONNECTOR_AVAILABLE = False
 from data import processor
 from data.indicators import compute_indicators
 from data.sentiment import get_sentiment
@@ -85,6 +91,8 @@ CONNECTOR_REGISTRY: dict[str, type[DataSourceBase]] = {
     "yahoo":     YahooFinanceConnector,
     "coingecko": CoinGeckoConnector,
 }
+if _MT5_CONNECTOR_AVAILABLE:
+    CONNECTOR_REGISTRY["mt5"] = _MT5Connector  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------

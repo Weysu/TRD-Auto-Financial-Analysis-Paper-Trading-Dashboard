@@ -32,8 +32,29 @@ from simulation import (  # noqa: E402
     fetch_simulation_data,
     run_simulation,
 )
+from data.base import DataSourceBase  # noqa: E402
+from data.connectors.coingecko import CoinGeckoConnector  # noqa: E402
+from data.connectors.yahoo_finance import YahooFinanceConnector  # noqa: E402
+try:
+    from data.connectors.mt5_connector import MT5Connector as _MT5Connector
+    _MT5_CONNECTOR_AVAILABLE: bool = True
+except ImportError:
+    _MT5Connector = None  # type: ignore[assignment,misc]
+    _MT5_CONNECTOR_AVAILABLE = False
 
 START_DATE = date.today() - timedelta(days=364)
+
+# ---------------------------------------------------------------------------
+# Connector registry — mirrors app.py; used by any future MT5-aware simulation
+# path.  "mt5" entry is registered only when the MetaTrader5 package is
+# installed so that the page loads cleanly without it.
+# ---------------------------------------------------------------------------
+CONNECTOR_REGISTRY: dict[str, type[DataSourceBase]] = {
+    "yahoo":     YahooFinanceConnector,
+    "coingecko": CoinGeckoConnector,
+}
+if _MT5_CONNECTOR_AVAILABLE:
+    CONNECTOR_REGISTRY["mt5"] = _MT5Connector  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Dark-theme constants (mirrored from charts/)

@@ -165,7 +165,7 @@ BOTS: dict[str, BotConfig] = {
 
 def get_assets_for_bot(bot: BotConfig) -> dict[str, dict]:
     """Return the asset subset this bot should scan."""
-    from trd_auto.config.assets import STOCK_ASSETS, CRYPTO_ASSETS, ALL_ASSETS, FOCUSED_STOCK_ASSETS  # noqa: PLC0415
+    from trd_auto.config.assets import STOCK_ASSETS, CRYPTO_ASSETS, ALL_ASSETS, FOCUSED_STOCK_ASSETS, MT5_ASSETS  # noqa: PLC0415
     if bot.asset_universe == "crypto":
         return CRYPTO_ASSETS
     if bot.asset_universe == "stocks":
@@ -174,4 +174,6 @@ def get_assets_for_bot(bot: BotConfig) -> dict[str, dict]:
         return FOCUSED_STOCK_ASSETS
     if bot.asset_universe == "stocks_custom":
         return STOCK_ASSETS
+    if bot.asset_universe == "stocks_mt5":
+        return MT5_ASSETS
     return ALL_ASSETS

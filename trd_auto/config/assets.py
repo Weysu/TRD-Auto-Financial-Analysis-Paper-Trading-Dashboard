@@ -123,6 +123,22 @@ FOCUSED_STOCK_ASSETS: dict[str, dict] = {
 }
 
 # ---------------------------------------------------------------------------
+# MT5 asset universe — same 8 focused stocks routed through MT5 connector.
+# Symbol "id" values match the keys in MT5Connector.MT5_SYMBOL_MAP so that
+# the connector can resolve them to Pepperstone MT5 symbol names.
+# ---------------------------------------------------------------------------
+MT5_ASSETS: dict[str, dict] = {
+    "AMD (AMD)":                    {"source": "mt5", "id": "AMD"},
+    "Alphabet (GOOGL)":             {"source": "mt5", "id": "GOOGL"},
+    "Nvidia (NVDA)":                {"source": "mt5", "id": "NVDA"},
+    "Amazon (AMZN)":                {"source": "mt5", "id": "AMZN"},
+    "Marathon Petroleum (MPC)":     {"source": "mt5", "id": "MPC"},
+    "Caterpillar (CAT)":            {"source": "mt5", "id": "CAT"},
+    "Merck (MRK)":                  {"source": "mt5", "id": "MRK"},
+    "Occidental (OXY)":             {"source": "mt5", "id": "OXY"},
+}
+
+# ---------------------------------------------------------------------------
 # Crypto assets  (CoinGecko coin IDs)
 # ---------------------------------------------------------------------------
 CRYPTO_ASSETS: dict[str, dict] = {
